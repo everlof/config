@@ -1,0 +1,194 @@
+#!/bin/bash
+
+# Are we being sourced?
+if [[ $_ != $0 ]] ; then
+  _pod_dev_completion ()   #  By convention, the function name
+  {                 #+ starts with an underscore.
+    local cur
+    # Pointer to current completion word.
+    # By convention, it's named "cur" but this isn't strictly necessary.
+
+    COMPREPLY=()   # Array variable storing the possible completions.
+    cur=${COMP_WORDS[COMP_CWORD]}
+
+    COMPREPLY=( $( compgen -W 'version release setup internal local' -- $cur ) )
+
+    return 0
+  }
+
+  complete -F _pod_dev_completion pod-dev
+  return
+fi
+
+REPO_NAME="tp-master"
+REPO_URL="git@bitbucket.org:fsemobequipmentperformance/pods-master.git"
+
+if [ -z "$POD_LOCAL_HOME" ] ; then
+  echo "environment var POD_LOCAL_HOME not set, please set it and run again"
+  exit 1
+fi
+
+help() {
+  echo -e ""
+  echo -e "Directory where pod-dev script resides '$BASEDIR'"
+  echo -e ""
+  echo -e "Commands:"
+  echo -e "---------"
+  echo -e "version"
+  echo -e "release"
+  echo -e "setup"
+  echo -e "internal [pattern]"
+  echo -e "local [pattern]"
+  echo ""
+  echo -e "internal and local by default changes all projects"
+  echo -e "but you can specify a specific by providing a pattern."
+  echo -e
+}
+
+extract_pod_version() {
+  sed -ne "s/^.*version.*= *[\"']\(.*\)[\"'].*$/\1/p"
+}
+
+podspec() {
+  local podspec=`ls *.podspec`
+  if [ ${#podspec} -lt 1 ] ; then
+    echo "Couldn't find podspec"
+    exit 1
+  fi
+  echo "$podspec"
+}
+
+podfile() {
+  local podfile=`ls Podfile`
+  if [ ${#podfile} -lt 1 ] ; then
+    echo "Couldn't find podfile"
+    exit 1
+  fi
+  echo "$podfile"
+}
+
+add_comment () {
+  local match=${3-".*"}
+  sed -i '' -e "s/\(^[^#]*pod *[\"']$match[\"'].*# *$2 *$\)/#\1/" "$1"
+}
+
+remove_comment () {
+  local match=${3-".*"}
+  sed -i '' -e "s/^#\( *pod *[\"']$match[\"'].*# *$2 *\)/\1/" "$1"
+}
+
+make_local () {
+  local podfile="$1"
+  old=`mktemp`
+  cp "$podfile" "$old"
+  add_comment "$podfile" "internal" $2
+  remove_comment "$podfile" "local" $2
+  diff "$old" "$podfile"
+  if [ "$?" -ne 0 ] ; then
+    pod install
+    if [ "$?" -ne 0 ] ; then
+      echo "Couldn't \`pod update\`, reverting Podfile"
+      cp "$old" "$podfile"
+    fi
+  fi
+  rm "$old"
+}
+
+make_internal () {
+  local podfile="$1"
+  old=`mktemp`
+  cp "$podfile" "$old"
+  add_comment "$podfile" "local" $2
+  remove_comment "$podfile" "internal" $2
+  diff "$old" "$podfile"
+  if [ "$?" -ne 0 ] ; then
+    pod install
+    if [ "$?" -ne 0 ] ; then
+      echo "Couldn't \`pod update\`, reverting Podfile"
+      cp "$old" "$podfile"
+    fi
+  fi
+  rm "$old"
+}
+
+release () {
+  podspec_file=$(podspec)
+  current_version=$(cat "$podspec_file" | extract_pod_version)
+  echo "Current version: $current_version"
+
+  if [[ "$current_version" != *.LOCAL* ]]; then
+    echo "The current version does not contain pattern 'x.y.z.LOCAL', which would be release as x.y.z"
+    exit 1
+  fi
+
+  release_version=$(echo $current_version | sed 's/\(.*\).LOCAL/\1/')
+
+  echo "Are you ready to release version '$current_version' as '$release_version' (y or n)?"
+
+  read should_release
+
+  if [[ "$should_release" != y ]]; then
+    echo "Aborting"
+    exit 1
+  fi
+
+  echo "Releasing version '$release_version'..."
+
+  sed -i '' "s/$current_version/$release_version/" "$podspec_file"
+
+  # spod spec lint --allow-warnings --sources="${REPO_URL},https://github.com/CocoaPods/Specs"
+  git commit -a -m "Release $release_version"
+  git tag "$release_version"
+  git push github "$release_version"
+  pod repo push "$REPO_NAME" "$podspec_file" --allow-warnings --sources="${REPO_URL},https://github.com/CocoaPods/Specs" --verbose
+  # pod repo push tp-master  --allow-warnings --sources="git@bitbucket.org:fsemobequipmentperformance/pods-master.git,https://github.com/CocoaPods/Specs" --verbose
+  # REPO_NAME="tp-master"
+  # REPO_URL="git@bitbucket.org:fsemobequipmentperformance/pods-master.git"
+
+  # Check if we could push
+  # If not, we should nicely reset what we have done.
+  if [ "$?" -ne 0 ] ; then
+    echo "Failed to release... Will remove tag from remote"
+    git push github :"$release_version"
+    echo "...And reset head"
+    git reset --hard HEAD~1
+    echo "...And remove local tag"
+    git tag -d "$release_version"
+    echo "...And exit"
+    exit 1
+  fi
+
+  echo "Enter next (new) version for this Pod (without LOCAL):"
+  read next_version
+
+  next_version="${next_version}.LOCAL"
+  sed -i '' "s/$release_version/$next_version/" "$podspec_file"
+
+  echo "Release completed!"
+}
+
+setup () {
+  if pod repo 2>&1 | grep -q "$REPO_NAME" ; then
+    echo "Pod repo \`$REPO_NAME\` already setup."
+  else
+    pod repo add "$REPO_NAME" "$REPO_URL"
+  fi
+}
+
+if [ $# -eq 0 ]; then
+  help
+  exit -1
+elif [ "$1" == "version" ] && [ $# -eq 1 ]; then
+  cat `podspec` | extract_pod_version
+elif [ "$1" == "local" ] ; then
+  make_local `podfile` $2
+elif [ "$1" == "internal" ] ; then
+  make_internal `podfile` $2
+elif [ "$1" == "setup" ] && [ $# -eq 1 ]; then
+  setup
+elif [ "$1" == "release" ] && [ $# -eq 1 ]; then
+  release
+else
+  echo -en "\nERROR:  See command usage\n"
+  help
+fi
