@@ -1,0 +1,456 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+""" Gerrit utility tool """
+
+import argparse
+import logging
+import sys
+import subprocess
+import json
+import os
+import re
+
+import multiprocessing
+import threading
+import time
+import fileinput
+
+
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth
+from requests.exceptions import RequestException
+try:
+    from requests_kerberos import HTTPKerberosAuth, OPTIONAL
+    _kerberos_support = True
+except ImportError:
+    _kerberos_support = False
+
+from pygerrit2.rest import GerritRestAPI
+from pygerrit2.rest.auth import HTTPDigestAuthFromNetrc, HTTPBasicAuthFromNetrc
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+# Which gerrit will this script communicate with
+gerrit_host='https://review.gerrithub.io'
+
+bitrise_triggered_by="Gerrit (TPServiceUser)"
+
+# The Bitrise token that is used to communcate with the bitrise API
+bitrise_api_token="gmk2MXvmDE959zVCBzMdtZWv6bEvY4u1bX8VoOw--uTQVQWs8ZIoGXpGgM7vkUgNaD8Yy7GV490h2cfz88eLJg"
+
+# This is what connects a "Gerrit project" with a "Bitrise app"
+#
+# The root keys are the gerrit projects and then it maps to the bitrise-slug
+# and the bitrise-token for that app in Bitrise.
+repo_config = {
+    "TetraPakMobileApps/PMC": {
+        "slug": "fc6a2f49fc6f54ef",
+        "token": "BtmqvQTc5XKIkILbFNRIqA"
+    },
+    "TetraPakMobileApps/LeadManagement-iOS": {
+        "slug": "4b3ea9965f6ff5bb",
+        "token": "AEIq4MjPGmSa9W1jcD1yhA"
+    }
+}
+
+class Enum(set):
+    def __getattr__(self, name):
+        if name in self:
+            return name
+        raise AttributeError
+
+Actions = Enum([
+    "overview",   # Show an overview of "my" changes
+    "show",       # Show info about the "current" change
+    "xcode",      # Show Review-Comments as Xcode warnings
+    "open",	      # Open up the current change in a browser
+    "checkout",   # TBD
+    "pods",       # Show info about pods that this change depend on
+    "comment",    # Post a comment on the current change
+
+    # How to use gerrit stream-events with the `stream`-command:
+    # ssh -p 29418 YOUR_USERNAME@review.gerrithub.io gerrit stream-events | gerrit stream
+    "stream",     # Receive Gerrit stream-events and "do things" with them.
+                  # Currently does:
+                  # - On receiving 'patchset-created', trigger build
+                  #   and start process to monitor build, post comment
+                  #   when starting build and when build finished.
+    "test"
+])
+
+# https://stackoverflow.com/questions/22229536/edit-project-config-in-a-gerrit-projecthttps://stackoverflow.com/questions/22229536/edit-project-config-in-a-gerrit-project
+# ssh -p 29418 TPServiceUser@review.gerrithub.io gerrit review 6efedda49f854ebf2601103b009c882316a3754a --message "Test"
+# ssh -p 29418 user@host gerrit review --project MyProject --message "'I just verified this patchset'" --verified +1 1,1
+
+def _main():
+    action = Actions.overview
+    if len(sys.argv) > 1 and (sys.argv[1] in Actions or sys.argv[1] == "update"):
+        action = sys.argv[1]
+        del sys.argv[1]
+
+    descr = 'Talk to gerrit backend'
+    parser = argparse.ArgumentParser(
+        description=descr,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-g', '--gerrit-url', dest='gerrit_url',
+                        required=False,
+                        help='gerrit server url')
+    parser.add_argument('-b', '--basic-auth', dest='basic_auth',
+                        action='store_true',
+                        help='use basic auth instead of digest')
+    if _kerberos_support:
+        parser.add_argument('-k', '--kerberos-auth', dest='kerberos_auth',
+                            action='store_true',
+                            help='use kerberos auth')
+    parser.add_argument('-u', '--username', dest='username',
+                        help='username')
+    parser.add_argument('-p', '--password', dest='password',
+                        help='password')
+    parser.add_argument('-n', '--netrc', dest='netrc',
+                        action='store_true',
+                        help='Use credentials from netrc')
+    parser.add_argument('-v', '--verbose', dest='verbose',
+                        action='store_true',
+                        help='enable verbose (debug) logging')
+
+    options = parser.parse_args()
+
+    level = logging.DEBUG if options.verbose else logging.INFO
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s',
+                        level=level)
+
+    auth = HTTPBasicAuthFromNetrc(url=gerrit_host)
+
+    # Use verify=False here if you'd like to Charles it
+    rest = GerritRestAPI(url=gerrit_host, auth=auth, verify=False)
+
+    if action == Actions.test:
+        gerrit_test(rest)
+        sys.exit(0)
+
+    if action == Actions.stream:
+        gerrit_stream_events(rest)
+        sys.exit(0)
+
+    if action == Actions.checkout:
+        gerrit_checkout()
+        sys.exit(0)
+
+    if action == Actions.pods:
+        gerrit_pods(rest)
+        sys.exit(0)
+
+    if action == Actions.overview:
+        gerrit_list(rest)
+        sys.exit(0)
+
+    change = gerrit_current_change(rest)
+    if action == Actions.xcode:
+        xcode_warnings_for_change(rest, change)
+    elif action == "update":
+        gerrit_update(change)
+    elif action == Actions.open:
+        gerrit_open(change)
+    elif action == Actions.comment:
+        gerrit_comment(rest, change)
+    else:
+        gerrit_show(change)
+
+    sys.exit(0)
+
+def xcode_warnings_for_change(rest, change):
+    if change['status'] == "ABANDONED":
+        return
+    #print(json.dumps(change, indent=4))
+    #sys.exit(0)
+    comments = rest.get("/changes/%s/comments" % change['change_id'])
+    for filename in comments:
+        for file_comments in comments[filename]:
+            unresolved = file_comments['unresolved']
+            line = file_comments['line']
+            message = file_comments['message'].encode('utf-8')
+            fn = filename.encode('utf-8')
+            username = file_comments['author']['name'].encode('utf-8')
+            #if unresolved:
+            print("%s:%d: warning: %s: %s" % (fn, line, username, message))
+
+def gerrit_update(change):
+    remote = subprocess.Popen(["sh", "-c", "git remote -v | grep push | grep gerrit | cut -f 1 -d'\t'"], stdout=subprocess.PIPE).communicate()[0].strip()
+    if len(remote) > 0:
+        print(bcolors.HEADER + "GERRIT => Amending" + bcolors.ENDC)
+        print(subprocess.Popen(["git", "commit", "--amend", "--no-edit"], stdout=subprocess.PIPE).communicate()[0].strip())
+        print(bcolors.HEADER + "GERRIT => Pushing" + bcolors.ENDC)
+        print(subprocess.Popen(["git", "push", remote, "HEAD:refs/for/%s" % change['branch'].encode('utf-8')], stdout=subprocess.PIPE).communicate()[0].strip())
+    else:
+        print("Couldn't find remote for gerrit")
+
+def gerrit_open(change):
+    subprocess.Popen(["open", "https://review.gerrithub.io/%d" % change['_number']], stdout=subprocess.PIPE).communicate()[0]
+
+def gerrit_show(change):
+    print(json.dumps(change, indent=2))
+    print("Subject: %s" % change['subject'])
+    print("Owner:   %s" % change['owner']['username'])
+
+def gerrit_pods(rest):
+    local_paths = subprocess.Popen(["sh", "-c", "cat Podfile | grep ENV | grep -v -e'# *pod'"], stdout=subprocess.PIPE).communicate()[0].strip().split("\n")
+    last_log = subprocess.Popen(["git", "log", "-1", "--pretty=%B"], stdout=subprocess.PIPE).communicate()[0]
+
+    for path in local_paths:
+        if len(path) == 0:
+            continue
+        extract_path_match = re.search('POD_LOCAL_HOME.*\+\s*[\'"](.*)[\'"]', path, re.IGNORECASE)
+        relative_path = extract_path_match.group(1)
+        podspec_abs_path = "%s%s" % (os.environ['POD_LOCAL_HOME'], relative_path)
+        basename = os.path.basename(os.path.dirname(podspec_abs_path))
+        os.chdir(os.path.dirname(podspec_abs_path))
+        lib_change = gerrit_current_change(rest)
+
+        regex = '%s: I([0-9a-fA-F]{40})' % basename
+        matching = re.search(regex, last_log, re.IGNORECASE)
+
+        print(bcolors.HEADER + ("LIB => %s" % basename) + bcolors.ENDC)
+        print("  Status:     %s (%d)" % (lib_change['status'], lib_change['_number']))
+        if lib_change['status'] == "NEW":
+            print("  ChangeId:   %s" % lib_change['change_id'])
+            print("  Owner:      %s" % lib_change['owner']['username'])
+            print("  Commit:     %s" % lib_change['owner']['username'])
+            if matching is None:
+                print("  In log:     NO")
+            else:
+                print("  In log:     YES")
+            print("  Subject:    %s" % lib_change['subject'])
+        else:
+            print("  Subject:    %s" % lib_change['subject'])
+        print
+
+def gerrit_checkout():
+    pass
+    #
+    #remote = subprocess.Popen(["sh", "-c", "git remote -v | grep push | grep gerrit | cut -f 1 -d'\t'"], stdout=subprocess.PIPE).communicate()[0].strip()
+    #print(remote)
+    #print("git fetch %s refs/changes/77/359477/6 && git checkout FETCH_HEAD" % (remote))
+
+def print_with_width(text, width):
+    out_text=""
+    if len(text) < width:
+        out_text = text + (width - len(text))*' '
+    else:
+        out_text = text[0:width-2] + ". "
+    print "%s|" % out_text,
+
+def gerrit_dash_show(change):
+    if 'labels' in change and 'Code-Review' in change['labels'] and 'recommended' in change['labels']['Code-Review']:
+        print " +1 |",
+    else:
+        print "    |",
+
+    # Verified
+    print "- |",
+
+    # Project
+    print_with_width(change['project'].split("/")[1].encode('utf-8'), 10)
+
+    print_with_width(change['branch'].encode('utf-8'), 9)
+
+    print_with_width(change['owner']['username'].encode('utf-8'), 9)
+
+    print_with_width(change['subject'].encode("ascii","ignore"), 42)
+
+    insertions = "+" + str(change['insertions'])
+    deletions = "-" + str(change['deletions'])
+
+    print_with_width("%s, %s" % (insertions, deletions), 13)
+
+    print_with_width(str(change['_number']), 9)
+
+    print
+
+def gerrit_comment(rest, change):
+    print(json.dumps(change, indent=3))
+    change_id = change['id']
+    ret = rest.post('/changes/%s/revisions/current/review' % change_id, json={ "message": "Bot was here 🤖\n" })
+
+    #TPServiceBot <testish.at.tp@gmail.com>
+    print("I will comment")
+    print(ret)
+
+
+def gerrit_list(rest):
+    current = gerrit_current_change(rest)
+    dashboard_changes = rest.get("/changes/?q=is:open+owner:self&q=is:open+((reviewer:self+-owner:self+-star:ignore)+OR+assignee:self)&o=LABELS&o=DETAILED_ACCOUNTS")
+    #print(json.dumps(dashboard_changes))
+
+    outgoing = dashboard_changes[0]
+    incoming = dashboard_changes[1]
+
+    header =       " CR | V |  PROJECT  |  BRANCH  |  OWNER   |   SUBJECT                                 |     SIZE     |  CHANGE  |"
+    below_header = "----+---+-----------+----------+----------+-------------------------------------------+--------------+----------+"
+
+    print(bcolors.HEADER + "GERRIT => Outgoing reviews" + bcolors.ENDC)
+    print(header)
+    print(below_header)
+    for change in outgoing:
+        gerrit_dash_show(change)
+
+    print
+    print(bcolors.HEADER + "GERRIT => Incoming reviews" + bcolors.ENDC)
+    print(header)
+    print(below_header)
+    for change in incoming:
+        gerrit_dash_show(change)
+
+def gerrit_current_change(rest):
+    output = subprocess.Popen(["git", "log", "-1", "--pretty=%B"], stdout=subprocess.PIPE).communicate()[0]
+    changeIdSearch = re.search('Change-Id: (.*)', output, re.IGNORECASE)
+    changeId = None
+
+    if changeIdSearch:
+        changeId = changeIdSearch.group(1)
+    else:
+        logging.error("Could'nt extract changeId from current commit")
+        sys.exit(1)
+
+    try:
+        change = rest.get("/changes/%s/detail" % changeId)
+    except RequestException as err:
+        logging.error("Error: %s", str(err))
+
+    return change
+
+
+
+def check_bitrise_build(build_object, change_id, app_slug, token, ref, ref_nbr, rest):
+    """
+
+    - build_object: object received from bitrise
+    - change_id: the `change_id` for the change that was updated
+    - app_slug: the app slug for the app that was updated (from bitrise: Code -> App Slug)
+    - token: the application token for the app that was updated (from bitrise: Code -> App Token)
+    - ref: the ref for this change
+    - ref_nbr: the patch-set number for this change
+    - rest: the REST-object used to communcate with Gerrit
+
+    """
+
+    # Extract the build slug from bitrise response,
+    # we'll use it to extract info continually from bitrise about the build.
+    build_slug = build_object['build_slug']
+
+    # Loop untill we break
+    while True:
+        # Call to get the status for this build
+        output = subprocess.Popen([
+            "curl", "--silent",
+            "-H", 'Authorization: token %s' % bitrise_api_token,
+            "https://api.bitrise.io/v0.1/apps/%s/builds/%s" % (app_slug, build_slug)
+        ], stdout=subprocess.PIPE).communicate()[0]
+
+        data = json.loads(output)
+        status_text = data['data']['status_text']
+        status = data['data']['status']
+
+        if status_text == "in-progress":
+            # Currently building, back off and wait 60 seconds
+            print("%s: Still in progress, building..." % build_slug)
+            time.sleep(60)
+        elif status_text == "on-hold":
+            print("%s: On hold, waiting..." % build_slug)
+            time.sleep(60)
+        elif status_text == "error":
+            # Build failed - stop checking build and post -1 + comment
+            print("%s: Build failed!" % build_slug)
+            ret = rest.post('/changes/%s/revisions/current/review' % change_id, json={
+                "message": "🛑  Build failed (for patch-set: %s)" % ref_nbr,
+                "labels": {
+                     "CI-Status": "-1",
+                },
+            })
+            break
+        elif status_text == "success":
+            # Build success! - stop checking build and post +1 + comment
+            print("%s: Build success!" % build_slug)
+            ret = rest.post('/changes/%s/revisions/current/review' % change_id, json={
+                "message": "✅  Build success (for patch-set: %s)" % ref_nbr,
+                "labels": {
+                     "CI-Status": "+1",
+                },
+            })
+            print(ret)
+            break
+        else:
+            print("%s: Build status unknown: %s, %s" % (build_slug, status_text, status))
+            time.sleep(10)
+
+def gerrit_stream_events(rest):
+    print("> streaming")
+    for line in fileinput.input():
+        jsonObject = json.loads(line)
+        if jsonObject['type'] == "patchset-created":
+            project = jsonObject['change']['project']
+            if project in repo_config:
+                # Extract various info that's needed
+                bitrise_config = repo_config[project]
+                rev = jsonObject['patchSet']['revision']
+                ref = jsonObject['patchSet']['ref']
+                patchset_nbr = jsonObject['patchSet']['number']
+                change_nbr = jsonObject['change']['number']
+                change_id = jsonObject['change']['id']
+                project_name = jsonObject['change']['project']
+                who = jsonObject['uploader']['name']
+
+                hook_data = {
+                    "hook_info":
+                    {
+                        "type": "bitrise",
+                        "api_token": bitrise_config['token']
+                    },
+                    "build_params":
+                    {
+                        "environments":
+                        [
+                            {
+                                "mapped_to": "GERRIT_PROJECT",
+                                "value": project_name,
+                                "is_expand": True
+                            }
+                        ],
+                        "branch": "master",
+                        "branch_dest": "master",
+                        "pull_request_id": change_nbr,
+                        "pull_request_head_branch": ref
+                    },
+                    "triggered_by": bitrise_triggered_by
+                }
+
+                output = subprocess.Popen([
+                    "curl", "--silent",
+                    "https://www.bitrise.io/app/%s/build/start.json" % bitrise_config['slug'],
+                    "--data",
+                    json.dumps(hook_data)
+                ], stdout=subprocess.PIPE).communicate()[0]
+
+                print(json.dumps(hook_data))
+                bitrise_build_object=json.loads(output)
+                print(output)
+                build_url=bitrise_build_object['build_url']
+                print("%s: Triggered build for change %s: %s" % (bitrise_build_object['build_slug'], change_nbr, build_url))
+
+                # Post info that we're gonna build it!
+                msg = "Scheduled build for patch set %s\n(%s)" % (patchset_nbr, build_url)
+                ret = rest.post('/changes/%s/revisions/current/review' % change_id, json={ "message": msg })
+
+                process = multiprocessing.Process(target=check_bitrise_build,
+                                          args=(bitrise_build_object, change_id, bitrise_config['slug'], bitrise_config['token'], ref, patchset_nbr, rest))
+                process.start()
+
+if __name__ == "__main__":
+    sys.exit(_main())

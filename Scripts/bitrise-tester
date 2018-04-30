@@ -1,0 +1,44 @@
+#!/bin/bash
+
+APP="$1"
+
+if [ -z "$APP" ] ; then
+  echo "Select app, bitte"
+fi
+
+if [ "$APP" == "LM" ] ; then
+  cloneURL="https://github.com/TetraPakMobileApps/LeadManagement-iOS.git"
+  export BITRISE_APP_TITLE="LeadManagement"
+fi
+
+ref="$2"
+
+if [ -z "$ref" ] ; then
+  echo "Paste your gerrit checkout-link, bitte"
+  read ref
+fi
+
+RUN_DIR=$(mktemp -d)
+RUN_DIR="/tmp/bitrise-build"
+
+pushd "$RUN_DIR"
+
+common_yml_loc=`curl 'https://bitbucket.org/!api/2.0/snippets/fsemobequipmentperformance/xejEz/' 2>/dev/null | jq '.["files"]["bitrise.yml"]["links"]["self"]["href"]' | tr -d '"'`
+common_yml=$(curl ${common_yml_loc} 2>/dev/null)
+echo "$common_yml" > common.yml
+
+if [ ! -d "$APP" ] ; then
+  mkdir "$APP"
+fi
+
+pushd "$APP"
+
+git init
+
+eval "$ref"
+
+bitrise run tester --config ../common.yml
+
+echo "================================================================"
+echo
+echo "Build tree: $PWD"

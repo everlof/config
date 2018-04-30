@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# For example invoked like this:
+# BITRISE_APP_TITLE=TPLib bitrise-local feature git@bitbucket.org:fsemobequipmentperformance/tplib.git
+
+workflow="$1"
+cloneURL="$2"
+
+usage () {
+  echo "Usage: WORKFLOW CLONE_URL"
+  exit 1
+}
+
+if [ -z "$workflow" ] ; then
+  usage
+fi
+
+if [ -z "$cloneURL" ] ; then
+  usage
+fi
+
+RUN_DIR=$(mktemp -d)
+
+pushd "$RUN_DIR"
+
+common_yml_loc=`curl 'https://bitbucket.org/!api/2.0/snippets/fsemobequipmentperformance/xejEz/' 2>/dev/null | jq '.["files"]["bitrise.yml"]["links"]["self"]["href"]' | tr -d '"'`
+common_yml=$(curl ${common_yml_loc} 2>/dev/null)
+echo "$common_yml" > common.yml
+
+git clone "${cloneURL}" build_dir
+pushd build_dir
+
+bitrise run "${workflow}" --config ../common.yml
+
+echo "================================================================"
+echo
+echo "Build tree: $RUN_DIR"
