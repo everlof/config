@@ -17,8 +17,7 @@ ll = log --pretty=format:"%C(yellow)%h%Cred%d\\ %Creset%s%Cblue\\ [%cn]" --decor
 
 [user]
 	name = David Everlöf
-	email = david.everlof@knowit.se
-	signingkey = 6805C19E
+	email = everlof@gmail.com
 [push]
 	default = matching
 [core]
@@ -31,7 +30,5 @@ ll = log --pretty=format:"%C(yellow)%h%Cred%d\\ %Creset%s%Cblue\\ [%cn]" --decor
 [mergetool "sourcetree"]
 	cmd = /Applications/SourceTree.app/Contents/Resources/opendiff-w.sh \"$LOCAL\" \"$REMOTE\" -ancestor \"$BASE\" -merge \"$MERGED\"
 	trustExitCode = true
-[commit]
-	gpgsign = true
 [credential]
 	helper = osxkeychain
