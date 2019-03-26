@@ -27,3 +27,11 @@ Put `David.idekeybindings` in:
 
 Put DefaultKeyBinding.dict in:
 `~/Library/KeyBindings/DefaultKeyBinding.dict`
+
+# LLDB
+
+```swift
+touch ~/.lldbinit
+echo display @import UIKit >> ~/.lldbinit
+echo target stop-hook add -o \"target stop-hook disable\" >> ~/.lldbinit
+```
