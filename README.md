@@ -1,13 +1,11 @@
-# Programs
+# Setup a Mac
 
-Edit MARKDOWN-files:
+
+## Programs to install
 
 - Macdown
-
-See IP in menu bar macos:
-
-- IP in menubar:
-  https://www.monkeybreadsoftware.de/Software/IPinmenubar.shtml
+- IP in menubar: https://www.monkeybreadsoftware.de/Software/IPinmenubar.shtml
+- Paste: https://pasteapp.me
 
 
 # Xcode
@@ -23,15 +21,4 @@ Create a folder named `Custom` in `~/Library/Developer/Xcode/Templates/` then ju
 Put `David.idekeybindings` in:
 `/Users/daveve/Library/Developer/Xcode/UserData/KeyBindings/`
 
-# Avoid writing non-breaking space in terminal: 
-
-Put DefaultKeyBinding.dict in:
-`~/Library/KeyBindings/DefaultKeyBinding.dict`
-
 # LLDB
-
-```swift
-touch ~/.lldbinit
-echo display @import UIKit >> ~/.lldbinit
-echo target stop-hook add -o \"target stop-hook disable\" >> ~/.lldbinit
-```
