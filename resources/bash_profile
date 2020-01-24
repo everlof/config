@@ -1,5 +1,14 @@
 #!/bin/bash
 
+git() {
+  if [[ $1 == "checkout" ]]; then
+    osascript -e 'quit app "Xcode"'
+    command git "$@";
+  else
+    command git "$@";
+  fi;
+}
+
 export BASH_SILENCE_DEPRECATION_WARNING=1
 
 alias tmp='cd `mktemp -d`'
