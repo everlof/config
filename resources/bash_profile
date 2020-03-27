@@ -1,10 +1,10 @@
 #!/bin/bash
 
 git() {
-  if [[ $1 == "checkout" ]]; then
+  if [[ $1 == "checkout" ]]; then 
     osascript -e 'quit app "Xcode"'
     command git "$@";
-  else
+  else 
     command git "$@";
   fi;
 }
@@ -224,6 +224,9 @@ heelp() {
   echo "\`defaults write com.apple.finder AppleShowAllFiles YES\`"
   echo "\`defaults write com.apple.finder AppleShowAllFiles NO\`"
   echo "then: \`killall Finder\`"
+  echo
+  echo "Record simulator"
+  echo 'xcrun simctl io booted recordVideo --codec=h264 --mask=black --force appVideo_$RANDOM.mov'
   echo
   echo "View which version an iOS app was compiled for"
   echo "otool -l ~/Downloads/PMC_0.9.1.xcarchive/Products/Applications/PMC.app/PMC | fgrep --after-context=3 LC_VERSION_MIN_IPHONEOS"
