@@ -6,6 +6,7 @@
 - Macdown
 - IP in menubar: https://www.monkeybreadsoftware.de/Software/IPinmenubar.shtml
 - Paste: https://pasteapp.me
+- https://imageoptim.com/mac
 
 
 # Xcode
