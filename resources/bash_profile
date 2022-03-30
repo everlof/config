@@ -1,20 +1,21 @@
 #!/bin/bash
 
-git() {
-  if [[ $1 == "checkout" ]]; then 
-    osascript -e 'quit app "Xcode"'
-    command git "$@";
-  else 
-    command git "$@";
-  fi;
-}
+#git() {
+#  if [[ $1 == "checkout" ]]; then 
+#    osascript -e 'quit app "Xcode"'
+#    command git "$@";
+#  else 
+#    command git "$@";
+#  fi;
+#}
 
 export BASH_SILENCE_DEPRECATION_WARNING=1
 
 alias tmp='cd `mktemp -d`'
 
 pbx () {
-    echo *.xcodeproj/project.pbxproj
+#    echo *.xcodeproj/project.pbxproj
+    find . -name project.pbxproj ! -path "*DerivedData*" ! -path "*Pods*" | head -n 1 
 }
 
 export GIT_SSH_COMMAND="ssh -o ControlPath=none"
@@ -214,6 +215,16 @@ tpfix () {
 }
 
 heelp() {
+  echo "Download ipas from App store: \`ipatool\`"
+  echo
+  echo "visualise disk usage \`ncdu\`"
+  echo 
+  echo "Xcodes"
+  echo "https://github.com/RobotsAndPencils/xcodes"
+  echo
+  echo "Quick-look plugin:"
+  echo "https://github.com/ealeksandrov/ProvisionQL"
+  echo
   echo "Print the booted device's copyboard"
   echo "- xcrun simctl pbpaste booted"
   echo
@@ -245,6 +256,9 @@ heelp() {
   echo
   echo "Concat images horizontally"
   echo "montage [image-files...] -tile 5x1 -geometry +0+0 out.png"
+  echo
+  echo "List ports being listened on"
+  echo "netstat -anvp tcp | awk 'NR<3 || /LISTEN/'"
 }
 
 alert() {
