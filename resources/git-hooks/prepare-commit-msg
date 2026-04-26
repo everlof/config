@@ -1,0 +1,8 @@
+#!/bin/sh
+# Remove Claude Code signature from commit messages
+
+# Remove the full signature block (if present)
+sed -i.bak '/🤖 Generated with \[Claude Code\]/,/Co-Authored-By: Claude.*<noreply@anthropic.com>/d' "$1"
+# Remove standalone Co-Authored-By line for Claude
+sed -i.bak '/Co-Authored-By: Claude.*/d' "$1"
+rm -f "$1.bak"

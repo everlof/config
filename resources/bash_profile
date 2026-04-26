@@ -1,190 +1,120 @@
-#!/bin/bash
-
-#git() {
-#  if [[ $1 == "checkout" ]]; then 
-#    osascript -e 'quit app "Xcode"'
-#    command git "$@";
-#  else 
-#    command git "$@";
-#  fi;
-#}
+# ~/.bash_profile managed by the config repo.
+# Put machine-specific secrets and project tokens in ~/.bash_profile.local.
 
 export BASH_SILENCE_DEPRECATION_WARNING=1
+export JAVA_HOME=$(/usr/libexec/java_home -v17 2>/dev/null || true)
 
-alias tmp='cd `mktemp -d`'
+export LANG=en_US.UTF-8
+export LC_MONETARY=sv_SE.UTF-8
+export LC_ALL=en_US.UTF-8
+export LC_NUMERIC=sv_SE.UTF-8
 
-pbx () {
-#    echo *.xcodeproj/project.pbxproj
-    find . -name project.pbxproj ! -path "*DerivedData*" ! -path "*Pods*" | head -n 1 
-}
+export FORB_TARGET_CURRENCY=SEK
+export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+export PATH="$HOME/.npm-global/bin:$PATH"
+export PATH="$HOME/.elan/bin:$PATH"
 
-export GIT_SSH_COMMAND="ssh -o ControlPath=none"
-
-if [ -f `brew --prefix`/etc/bash_completion.d/git-completion.bash ]; then
-    . `brew --prefix`/etc/bash_completion.d/git-completion.bash
+if [ -x /opt/homebrew/bin/brew ]; then
+  eval "$(/opt/homebrew/bin/brew shellenv)"
 fi
 
-lastweek () {
-  git lg --author=David --before=$(date --date="1 days ago" "+%Y-%m-%d") --after=$(date --date="8 days ago" "+%Y-%m-%d")
+if [ -r /opt/homebrew/opt/chruby/share/chruby/chruby.sh ]; then
+  source /opt/homebrew/opt/chruby/share/chruby/chruby.sh
+fi
+if [ -r /opt/homebrew/opt/chruby/share/chruby/auto.sh ]; then
+  source /opt/homebrew/opt/chruby/share/chruby/auto.sh
+fi
+if command -v chruby >/dev/null 2>&1; then
+  chruby 3.3.1 2>/dev/null || true
+fi
+
+if [ -r /opt/homebrew/etc/profile.d/bash_completion.sh ]; then
+  source /opt/homebrew/etc/profile.d/bash_completion.sh
+fi
+
+if [ -r "$HOME/.cargo/env" ]; then
+  source "$HOME/.cargo/env"
+fi
+
+if [ -d /opt/homebrew/share/google-cloud-sdk/bin ]; then
+  export PATH="/opt/homebrew/share/google-cloud-sdk/bin:$PATH"
+fi
+
+if [ -x /opt/homebrew/opt/curl/bin/curl ]; then
+  export PATH="/opt/homebrew/opt/curl/bin:$PATH"
+fi
+
+if [ -r "$HOME/.config/broot/launcher/bash/br" ]; then
+  source "$HOME/.config/broot/launcher/bash/br"
+fi
+
+alias title='fido jira title --issue'
+alias title-current='fido jira title'
+alias branch='fido jira branch --issue'
+alias branch-current='fido jira branch'
+alias grep='grep -a'
+alias l='ls -l'
+alias ll='ls -la'
+alias claude="$HOME/.local/bin/claude"
+
+function update_terminal_tab_name {
+  echo -ne "\033]0;${PWD##*/}\007"
 }
 
-#alias python=python3.5
-#alias pip=python3.5
-
-alias grep='grep --color=auto '
-
-alias ll="ls -lhA"
-alias l="ls -l"
-
-__git_complete_remote_or_refspec_prpush ()
-{
-  local cur_="$cur" cmd="push"
-  local i c=1 remote="" pfx="" lhs=1 no_complete_refspec=0
-  if [ "$cmd" = "remote" ]; then
-    ((c++))
-  fi
-  while [ $c -lt $cword ]; do
-    i="${words[c]}"
-    case "$i" in
-    --mirror) [ "$cmd" = "push" ] && no_complete_refspec=1 ;;
-    --all)
-      case "$cmd" in
-      push) no_complete_refspec=1 ;;
-      fetch)
-        return
-        ;;
-      *) ;;
-      esac
-      ;;
-    -*) ;;
-    *) remote="$i"; break ;;
-    esac
-    ((c++))
-  done
-  if [ -z "$remote" ]; then
-    __gitcomp_nl "$(__git_remotes)"
-    return
-  fi
-  if [ $no_complete_refspec = 1 ]; then
-    return
-  fi
-  [ "$remote" = "." ] && remote=
-  case "$cur_" in
-  *:*)
-    case "$COMP_WORDBREAKS" in
-    *:*) : great ;;
-    *)   pfx="${cur_%%:*}:" ;;
-    esac
-    cur_="${cur_#*:}"
-    lhs=0
-    ;;
-  +*)
-    pfx="+"
-    cur_="${cur_#+}"
-    ;;
-  esac
-  case "$cmd" in
-  fetch)
-    if [ $lhs = 1 ]; then
-      __gitcomp_nl "$(__git_refs2 "$remote")" "$pfx" "$cur_"
-    else
-      __gitcomp_nl "$(__git_refs)" "$pfx" "$cur_"
-    fi
-    ;;
-  pull|remote)
-    if [ $lhs = 1 ]; then
-      __gitcomp_nl "$(__git_refs "$remote")" "$pfx" "$cur_"
-    else
-      __gitcomp_nl "$(__git_refs)" "$pfx" "$cur_"
-    fi
-    ;;
-  push|prpush|pr)
-    if [ $lhs = 1 ]; then
-      __gitcomp_nl "$(__git_refs)" "$pfx" "$cur_"
-    else
-      __gitcomp_nl "$(__git_refs "$remote")" "$pfx" "$cur_"
-    fi
-    ;;
-  esac
-}
-
-_git_prpush ()
-{
-  __git_complete_remote_or_refspec_prpush
-}
-
-alias g=git
-__git_complete g _git
-__git_complete prpush _git_prpush
-__git_complete pr _git_prpush
-
-pjson () {
-  ~/bin/pjson.py | less -X
-}
-
-export PATH="$PATH:$HOME/bin"
-
-# brew install coreutils
-
-prpush () {
-  tmp=$(mktemp)
-  git push $@ 2>&1 | tee "$tmp"
-  to_open=$(grep https $tmp | awk '{ print $2 }' )
-  rm "$tmp"
-  open "$to_open"
-}
-
-pr () {
-  remote=$1
-  branch=$2
-  destbranch=$3
-
-  if [ -z "$remote" ]
-  then
-    echo "usage: pr remote [branch] [dest-branch]"
-    return 1
-  fi
-
-  if [ -z "$branch" ]
-  then
-    branch=$(git rev-parse --abbrev-ref HEAD)
-  fi
-
-  # from the remote url we get the repo name, which is used in the url for BitBucker
-  bb_reponame=$(git remote -v | grep '(push)' | grep $remote | cut -f2 | cut -d" " -f 1 | cut -d: -f 2 | cut -d. -f1)
-
-  if [ -z "$destbranch" ] ; then
-    open "https://bitbucket.org/$bb_reponame/pull-requests/new?source=$branch"
+cd() {
+  if [ "$1" = "§" ]; then
+    builtin cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   else
-    open "https://bitbucket.org/$bb_reponame/pull-requests/new?source=$branch&dest=$destbranch"
+    builtin cd "$@"
   fi
 }
 
 parse_git_branch() {
-    dirt_info=$(git status --short 2>/dev/null)
-    branch=$(git branch 2> /dev/null | sed -e '/^[^*]/d' -e 's/* \(.*\)/\1/')
+  local dirt_info branch
+  dirt_info=$(git status --short 2>/dev/null)
+  branch=$(git branch 2>/dev/null | sed -e '/^[^*]/d' -e 's/* \(.*\)/\1/')
 
-    if [ ${#dirt_info} -ne 0 ]
-    then
-      branch="${branch}~"
-    fi
+  if [ ${#dirt_info} -ne 0 ]; then
+    branch="${branch}~"
+  fi
 
-    if [ ${#branch} -gt 0 ]
-    then
-      echo "($branch)"
-    fi
-}
-
-thumb() {
-  if [ "$1" -eq 0 ]
-  then
-    echo -en "\xf0\x9f\x91\x8d" # Thumbs up!
-  else
-    echo -en "\xf0\x9f\x91\x8e" # Thumbs down!
+  if [ ${#branch} -gt 0 ]; then
+    echo "$branch"
   fi
 }
 
-export PATH=/usr/local/opt/coreutils/libexec/gnubin:$PATH
+thumb() {
+  if [ "$1" -eq 0 ]; then
+    echo -en "\xf0\x9f\x91\x8d"
+  else
+    echo -en "\xf0\x9f\x91\x8e"
+  fi
+}
+
+mr() {
+  local currentBranch encodedBranch url
+  currentBranch=$(git rev-parse --abbrev-ref HEAD)
+  encodedBranch=$(curl -Gso /dev/null -w %{url_effective} --data-urlencode "" --get "http://example.com?b=${currentBranch}" | cut -d'?' -f 2 | cut -d'=' -f 2)
+  url="http://10.1.2.92/festinasweden/mobilewatchapps/-/merge_requests/new?merge_request%5Bsource_branch%5D=${encodedBranch}"
+
+  case "$(uname)" in
+    Linux) xdg-open "$url" ;;
+    Darwin) open "$url" ;;
+    *) echo "Unsupported operating system." ;;
+  esac
+}
+
+pbx() {
+  find . -name project.pbxproj ! -path "*DerivedData*" ! -path "*Pods*" | head -n 1
+}
+
+mj() {
+  if [ $# -eq 0 ]; then
+    cd "$(command mj)"
+  else
+    command mj "$@"
+  fi
+}
 
 function timer_start {
   timer=${timer:-$SECONDS}
@@ -196,130 +126,51 @@ function timer_stop {
 }
 
 trap 'timer_start' DEBUG
-
-export PS1="$(thumb 0) \u@knowit \W\[\033[35m\]\$(parse_git_branch)\[\033[00m\] $ "
-
-# Func to gen PS1 after CMDs
 PROMPT_COMMAND=__prompt_command
 
 __prompt_command() {
-    local EXIT="$?"
-    timer_stop
-    PS1="$(thumb $EXIT)  \033[97m[last: ${timer_show}s]\033[00m \033[91m\D{%T}\033[00m \033[94m\w\033[00m \[\033[92m\]\$(parse_git_branch)\[\033[00m\]\n$ "
+  local EXIT="$?"
+  timer_stop
+
+  local EXTRAS=""
+  local BLACK="\033[90m"
+  local RED="\033[91m"
+  local GREEN="\033[92m"
+  local WHITE="\033[97m"
+  local RESET="\033[0m"
+  local GIT_BRANCH OUTPUT
+
+  GIT_BRANCH=$(parse_git_branch)
+  if [ ${#GIT_BRANCH} -gt 0 ]; then
+    if [[ $GIT_BRANCH =~ ~$ ]]; then
+      OUTPUT=${RED}${GIT_BRANCH}$RESET
+    else
+      OUTPUT=${BLACK}${GIT_BRANCH}$RESET
+    fi
+    EXTRAS="${WHITE}git: ${OUTPUT}"
+  fi
+
+  if [ ${#VIRTUAL_ENV} -gt 0 ]; then
+    if [ ${#EXTRAS} -gt 0 ]; then
+      EXTRAS="${EXTRAS}${WHITE} | venv: ${BLACK}${VIRTUAL_ENV}$RESET"
+    else
+      EXTRAS="${WHITE}venv: ${BLACK}${VIRTUAL_ENV}$RESET"
+    fi
+  fi
+
+  if [ ${#EXTRAS} -gt 0 ]; then
+    PS1="$(thumb $EXIT)  \033[97m[last: ${timer_show}s]\033[00m \033[91m\D{%T}\033[00m ${WHITE}(${RESET}${EXTRAS}${WHITE})${RESET}\] \033[94m\w\033[00m\n$ "
+  else
+    PS1="$(thumb $EXIT)  \033[97m[last: ${timer_show}s]\033[00m \033[91m\D{%T}\033[00m \033[94m\w\033[00m\n$ "
+  fi
+
+  update_terminal_tab_name
 }
 
-tpfix () {
-  sed -i '' "s/$(echo -en '\\\u0403')/$(echo -en '\xc3\x85')/g" $1
-  sed -i '' "s/$(echo -en '\\\u0402')/$(echo -en '\xc3\x84')/g" $1
-  sed -i '' "s/$(echo -en '\\\u2026')/$(echo -en '\xc3\x96')/g" $1
-}
-
-heelp() {
-  echo "Download ipas from App store: \`ipatool\`"
-  echo
-  echo "visualise disk usage \`ncdu\`"
-  echo 
-  echo "Xcodes"
-  echo "https://github.com/RobotsAndPencils/xcodes"
-  echo
-  echo "Quick-look plugin:"
-  echo "https://github.com/ealeksandrov/ProvisionQL"
-  echo
-  echo "Print the booted device's copyboard"
-  echo "- xcrun simctl pbpaste booted"
-  echo
-  echo "List code signing identities (CODE_SIGN_IDENTITY)"
-  echo "security find-identity -v -p codesigning"
-  echo
-  echo "Show/hide hidden files:"
-  echo "\`defaults write com.apple.finder AppleShowAllFiles YES\`"
-  echo "\`defaults write com.apple.finder AppleShowAllFiles NO\`"
-  echo "then: \`killall Finder\`"
-  echo
-  echo "Record simulator"
-  echo 'xcrun simctl io booted recordVideo --codec=h264 --mask=black --force appVideo_$RANDOM.mov'
-  echo
-  echo "View which version an iOS app was compiled for"
-  echo "otool -l ~/Downloads/PMC_0.9.1.xcarchive/Products/Applications/PMC.app/PMC | fgrep --after-context=3 LC_VERSION_MIN_IPHONEOS"
-  echo
-  echo "Poop instead of non-breaking space"
-  echo "~/Library/KeyBindings/DefaultKeyBinding.dict"
-  echo
-  echo "Print screen info"
-  echo "system_profiler SPDisplaysDataType"
-  echo
-  echo "Gource"
-  echo "gource --hide dirnames,filenames --seconds-per-day 0.1 --auto-skip-seconds 1 -1280x720 -o - | ffmpeg -y -r 60 -f image2pipe -vcodec ppm -i - -vcodec libx264 -preset ultrafast -pix_fmt yuv420p -crf 1 -threads 0 -bf 0 gource.mp4"
-  echo 
-  echo "Update bitrise workflow editor"
-  echo "bitrise plugin update workflow-editor"
-  echo
-  echo "Concat images horizontally"
-  echo "montage [image-files...] -tile 5x1 -geometry +0+0 out.png"
-  echo
-  echo "List ports being listened on"
-  echo "netstat -anvp tcp | awk 'NR<3 || /LISTEN/'"
-}
-
-alert() {
-  echo -e "\a"
-}
-
-rawurlencode() {
-  local string="${1}"
-  local strlen=${#string}
-  local encoded=""
-  local pos c o
-
-  for (( pos=0 ; pos<strlen ; pos++ )); do
-     c=${string:$pos:1}
-     case "$c" in
-        [-_.~a-zA-Z0-9] ) o="${c}" ;;
-        * )               printf -v o '%%%02x' "'$c"
-     esac
-     encoded+="${o}"
-  done
-  echo "${encoded}"    # You can either set a return variable (FASTER)
-  REPLY="${encoded}"   #+or echo the result (EASIER)... or both... :p
-}
-
-urlparse() {
-  eval $(url.py "$1" "$2")
-}
-
-escapeurl() {
-  urlparse "$1"
-  ENCODED_PATH=$(rawurlencode_tp "$_PATH")
-  echo "${_SCHEME}://${_NETLOC}${ENCODED_PATH}"
-}
-
-if [ -f ~/.bash_profile_local ] ; then
-  echo "Sourcing ~/.bash_profile_local"
-  . ~/.bash_profile_local
+if [ -n "${SSL_CERT_FILE:-}" ] && [ ! -f "$SSL_CERT_FILE" ]; then
+  unset SSL_CERT_FILE
 fi
 
-bp_python () {
-  echo "#!/usr/bin/env python3
-
-import sys
-
-def main():
-    print('Hello there %s' % sys.argv[1])
-
-if __name__ == '__main__':
-    main()
-
-"
-}
-
-#export PIP_EXTRA_INDEX_URL=http://127.0.0.1:8080/
-#local_pip_server() {
-#    pypi-server -p 8080 ~/uppd/tetra/plms-report-parser/dist/
-#}
-
-pman () {
-    man -t "${1}" | open -f -a /Applications/Preview.app
-}
-
-export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
-export PATH="/usr/local/opt/curl/bin:$PATH"
+if [ -r "$HOME/.bash_profile.local" ]; then
+  source "$HOME/.bash_profile.local"
+fi

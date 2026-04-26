@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""
+KMP Util - A file monitoring utility for KMP header and Swift files
+"""
+
+import os
+import sys
+import time
+import json
+import difflib
+import argparse
+from pathlib import Path
+from typing import Optional
+
+# Try to import pygments for syntax highlighting
+try:
+    from pygments import highlight
+    from pygments.lexers import get_lexer_for_filename, TextLexer
+    from pygments.formatters import TerminalFormatter
+    PYGMENTS_AVAILABLE = True
+except ImportError:
+    PYGMENTS_AVAILABLE = False
+    print("Note: Install 'pygments' for syntax highlighting: pip install pygments")
+
+
+class KMPUtil:
+    def __init__(self):
+        self.config_dir = Path.home() / ".kmputil"
+        self.config_file = self.config_dir / "config.json"
+        self.snapshots_dir = self.config_dir / "snapshots"
+        self._ensure_dirs()
+    
+    def _ensure_dirs(self):
+        """Create necessary directories if they don't exist"""
+        self.config_dir.mkdir(exist_ok=True)
+        self.snapshots_dir.mkdir(exist_ok=True)
+    
+    def _load_config(self) -> dict:
+        """Load configuration from disk"""
+        if not self.config_file.exists():
+            return {}
+        with open(self.config_file, 'r') as f:
+            return json.load(f)
+    
+    def _save_config(self, config: dict):
+        """Save configuration to disk"""
+        with open(self.config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+    
+    def _get_snapshot_path(self, file_path: str) -> Path:
+        """Get the snapshot file path for a given source file"""
+        # Create a safe filename from the path
+        safe_name = file_path.replace('/', '_').replace('\\', '_')
+        return self.snapshots_dir / f"{safe_name}.snapshot"
+    
+    def _read_file(self, file_path: str) -> Optional[str]:
+        """Read file content"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            print(f"Error reading file {file_path}: {e}")
+            return None
+    
+    def _syntax_highlight(self, text: str, filename: str) -> str:
+        """Apply syntax highlighting to text"""
+        if not PYGMENTS_AVAILABLE:
+            return text
+        
+        try:
+            lexer = get_lexer_for_filename(filename)
+        except:
+            lexer = TextLexer()
+        
+        return highlight(text, lexer, TerminalFormatter())
+    
+    def configure(self, file_path: str):
+        """Configure the file to monitor"""
+        abs_path = os.path.abspath(file_path)
+        
+        if not os.path.exists(abs_path):
+            print(f"Error: File '{abs_path}' does not exist")
+            return False
+        
+        config = self._load_config()
+        config['watched_file'] = abs_path
+        self._save_config(config)
+        
+        print(f"✓ Configured to watch: {abs_path}")
+        return True
+    
+    def freeze(self):
+        """Capture the current state of the watched file"""
+        config = self._load_config()
+        
+        if 'watched_file' not in config:
+            print("Error: No file configured. Run 'kmputil config <file>' first")
+            return False
+        
+        file_path = config['watched_file']
+        content = self._read_file(file_path)
+        
+        if content is None:
+            return False
+        
+        snapshot_path = self._get_snapshot_path(file_path)
+        
+        with open(snapshot_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        print(f"✓ Froze state of: {file_path}")
+        print(f"  Snapshot saved: {snapshot_path}")
+        return True
+    
+    def diff(self, show_highlight: bool = True):
+        """Show diff between frozen state and current state"""
+        config = self._load_config()
+        
+        if 'watched_file' not in config:
+            print("Error: No file configured. Run 'kmputil config <file>' first")
+            return False
+        
+        file_path = config['watched_file']
+        snapshot_path = self._get_snapshot_path(file_path)
+        
+        if not snapshot_path.exists():
+            print("Error: No frozen state found. Run 'kmputil freeze' first")
+            return False
+        
+        # Read frozen and current content
+        with open(snapshot_path, 'r', encoding='utf-8') as f:
+            frozen_content = f.read()
+        
+        current_content = self._read_file(file_path)
+        if current_content is None:
+            return False
+        
+        # Check if there are differences
+        if frozen_content == current_content:
+            print("✓ No changes detected")
+            return True
+        
+        # Generate unified diff
+        frozen_lines = frozen_content.splitlines(keepends=True)
+        current_lines = current_content.splitlines(keepends=True)
+        
+        diff = difflib.unified_diff(
+            frozen_lines,
+            current_lines,
+            fromfile=f"{file_path} (frozen)",
+            tofile=f"{file_path} (current)",
+            lineterm=''
+        )
+        
+        print(f"\n{'=' * 70}")
+        print(f"Changes detected in: {file_path}")
+        print('=' * 70)
+        
+        diff_text = '\n'.join(diff)
+        
+        if show_highlight and PYGMENTS_AVAILABLE:
+            # Color the diff output
+            from pygments.lexers import DiffLexer
+            print(highlight(diff_text, DiffLexer(), TerminalFormatter()))
+        else:
+            print(diff_text)
+        
+        return True
+    
+    def watch(self, interval: float = 2.0):
+        """Continuously watch for changes"""
+        config = self._load_config()
+        
+        if 'watched_file' not in config:
+            print("Error: No file configured. Run 'kmputil config <file>' first")
+            return False
+        
+        file_path = config['watched_file']
+        snapshot_path = self._get_snapshot_path(file_path)
+        
+        if not snapshot_path.exists():
+            print("Error: No frozen state found. Run 'kmputil freeze' first")
+            return False
+        
+        print(f"👀 Watching: {file_path}")
+        print(f"   Press Ctrl+C to stop\n")
+        
+        last_content = None
+        
+        try:
+            while True:
+                current_content = self._read_file(file_path)
+                
+                if current_content != last_content:
+                    # Clear screen for better visualization
+                    os.system('cls' if os.name == 'nt' else 'clear')
+                    
+                    print(f"[{time.strftime('%H:%M:%S')}] Checking for changes...")
+                    self.diff(show_highlight=True)
+                    
+                    last_content = current_content
+                
+                time.sleep(interval)
+        
+        except KeyboardInterrupt:
+            print("\n\n✓ Stopped watching")
+            return True
+    
+    def status(self):
+        """Show current configuration status"""
+        config = self._load_config()
+        
+        if 'watched_file' not in config:
+            print("No file currently configured")
+            print("\nUsage: kmputil config <file>")
+            return
+        
+        file_path = config['watched_file']
+        snapshot_path = self._get_snapshot_path(file_path)
+        
+        print(f"Current configuration:")
+        print(f"  Watched file: {file_path}")
+        print(f"  File exists: {'✓' if os.path.exists(file_path) else '✗'}")
+        print(f"  Frozen state: {'✓' if snapshot_path.exists() else '✗'}")
+        
+        if snapshot_path.exists():
+            mod_time = os.path.getmtime(snapshot_path)
+            print(f"  Frozen at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mod_time))}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='KMP Util - Monitor header and Swift file changes',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  kmputil config MyHeader.h        Configure file to watch
+  kmputil freeze                   Capture current state
+  kmputil diff                     Show changes since freeze
+  kmputil watch                    Continuously monitor changes
+  kmputil watch --interval 1       Watch with 1 second interval
+        """
+    )
+    
+    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+    
+    # Config command
+    config_parser = subparsers.add_parser('config', help='Configure file to watch')
+    config_parser.add_argument('file', help='Path to header or Swift file')
+    
+    # Freeze command
+    subparsers.add_parser('freeze', help='Capture current state')
+    
+    # Diff command
+    diff_parser = subparsers.add_parser('diff', help='Show changes since freeze')
+    diff_parser.add_argument('--no-highlight', action='store_true', 
+                            help='Disable syntax highlighting')
+    
+    # Watch command
+    watch_parser = subparsers.add_parser('watch', help='Continuously monitor changes')
+    watch_parser.add_argument('--interval', type=float, default=2.0,
+                             help='Check interval in seconds (default: 2.0)')
+    
+    # Status command
+    subparsers.add_parser('status', help='Show current configuration')
+    
+    args = parser.parse_args()
+    
+    util = KMPUtil()
+    
+    if args.command == 'config':
+        util.configure(args.file)
+    elif args.command == 'freeze':
+        util.freeze()
+    elif args.command == 'diff':
+        util.diff(show_highlight=not args.no_highlight)
+    elif args.command == 'watch':
+        util.watch(interval=args.interval)
+    elif args.command == 'status':
+        util.status()
+    else:
+        parser.print_help()
+
+
+if __name__ == '__main__':
+    main()

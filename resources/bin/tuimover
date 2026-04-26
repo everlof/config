@@ -1,0 +1,857 @@
+#!/usr/bin/env python3
+"""TUI File Mover - A curses-based tool for searching and moving files."""
+
+import curses
+import glob
+import json
+import os
+import re
+import shutil
+from pathlib import Path
+from typing import List, Optional, Set
+
+
+class Config:
+    """Manages persistent configuration."""
+
+    CONFIG_DIR = Path.home() / ".config" / "tuimover"
+    CONFIG_FILE = CONFIG_DIR / "config.json"
+
+    def __init__(self):
+        self.destination: str = str(Path.home())
+        self.search_dir: str = os.getcwd()  # Start in current dir, not home
+        self.last_pattern: str = "*"
+        self.recent_destinations: List[str] = []  # Recent destinations
+        self.max_recent: int = 10
+        self.load()
+
+    def load(self):
+        """Load config from file."""
+        if self.CONFIG_FILE.exists():
+            try:
+                with open(self.CONFIG_FILE) as f:
+                    data = json.load(f)
+                    self.destination = data.get("destination", self.destination)
+                    self.search_dir = data.get("search_dir", self.search_dir)
+                    self.last_pattern = data.get("last_pattern", self.last_pattern)
+                    self.recent_destinations = data.get("recent_destinations", [])
+            except (json.JSONDecodeError, IOError):
+                pass
+
+    def save(self):
+        """Save config to file."""
+        self.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(self.CONFIG_FILE, "w") as f:
+            json.dump({
+                "destination": self.destination,
+                "search_dir": self.search_dir,
+                "last_pattern": self.last_pattern,
+                "recent_destinations": self.recent_destinations,
+            }, f, indent=2)
+
+    def add_recent_destination(self, path: str):
+        """Add a destination to recent list."""
+        # Remove if already exists
+        if path in self.recent_destinations:
+            self.recent_destinations.remove(path)
+        # Add to front
+        self.recent_destinations.insert(0, path)
+        # Trim to max
+        self.recent_destinations = self.recent_destinations[:self.max_recent]
+
+
+class FileResult:
+    """Represents a search result."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.name = os.path.basename(path)
+        self.selected = False
+
+
+class TuiMover:
+    """Main TUI application."""
+
+    def __init__(self, stdscr):
+        self.stdscr = stdscr
+        self.config = Config()
+        self.all_results: List[FileResult] = []  # All files from scan
+        self.results: List[FileResult] = []       # Filtered results
+        self.cursor = 0
+        self.scroll_offset = 0
+        self.filter_text = ""  # Live filter as you type
+        self.status_msg = ""
+        # Filter options
+        self.match_mode = "filename"  # "filename", "path", "both"
+        self.use_regex = False
+        self.case_sensitive = False
+        self.setup_colors()
+
+    def setup_colors(self):
+        """Initialize color pairs."""
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_CYAN, -1)      # Header
+        curses.init_pair(2, curses.COLOR_GREEN, -1)     # Selected item
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)    # Cursor
+        curses.init_pair(4, curses.COLOR_RED, -1)       # Error
+        curses.init_pair(5, curses.COLOR_MAGENTA, -1)   # Multi-selected
+        curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # Match highlight
+
+    def truncate(self, text: str, max_len: int) -> str:
+        """Truncate text with ellipsis if needed."""
+        if len(text) <= max_len:
+            return text
+        return text[:max_len-3] + "..."
+
+    def draw_with_highlights(self, y: int, x: int, text: str, positions: List[tuple], base_attr: int, max_width: int):
+        """Draw text with highlighted match positions."""
+        if not positions or x >= max_width:
+            # No highlights, just draw normally
+            self.stdscr.addstr(y, x, text[:max_width - x], base_attr)
+            return
+
+        pos = x
+        text_idx = 0
+        remaining = max_width - x
+
+        for start, end in sorted(positions):
+            if text_idx >= len(text) or remaining <= 0:
+                break
+
+            # Draw text before match
+            if start > text_idx:
+                before = text[text_idx:start]
+                draw_len = min(len(before), remaining)
+                self.stdscr.addstr(y, pos, before[:draw_len], base_attr)
+                pos += draw_len
+                remaining -= draw_len
+
+            # Draw match
+            if remaining > 0 and end > text_idx:
+                match_start = max(start, text_idx)
+                match_text = text[match_start:end]
+                draw_len = min(len(match_text), remaining)
+                self.stdscr.addstr(y, pos, match_text[:draw_len], curses.color_pair(6) | curses.A_BOLD)
+                pos += draw_len
+                remaining -= draw_len
+
+            text_idx = end
+
+        # Draw remaining text after last match
+        if text_idx < len(text) and remaining > 0:
+            after = text[text_idx:]
+            self.stdscr.addstr(y, pos, after[:remaining], base_attr)
+
+    def draw(self):
+        """Draw the entire UI."""
+        self.stdscr.clear()
+        height, width = self.stdscr.getmaxyx()
+
+        # Header
+        title = " TUI File Mover "
+        self.stdscr.attron(curses.color_pair(1) | curses.A_BOLD)
+        self.stdscr.addstr(0, 0, "=" * width)
+        self.stdscr.addstr(0, (width - len(title)) // 2, title)
+        self.stdscr.attroff(curses.color_pair(1) | curses.A_BOLD)
+
+        # Destination and search dir
+        dest_label = f" Dest: {self.truncate(self.config.destination, width - 20)}"
+        src_label = f" Search in: {self.truncate(self.config.search_dir, width - 20)}"
+
+        self.stdscr.addstr(2, 0, dest_label)
+        self.stdscr.addstr(2, width - 12, "[^D] Change")
+        self.stdscr.addstr(3, 0, src_label)
+        self.stdscr.addstr(3, width - 12, "[^O] Change")
+
+        # Filter box
+        self.stdscr.addstr(5, 0, "-" * width)
+        filter_display = f" Filter: {self.filter_text}_"
+        self.stdscr.attron(curses.A_BOLD)
+        self.stdscr.addstr(6, 0, self.truncate(filter_display, width - 40))
+        self.stdscr.attroff(curses.A_BOLD)
+
+        # Filter options display
+        mode_short = {"filename": "name", "path": "path", "both": "both"}[self.match_mode]
+        regex_str = "regex" if self.use_regex else "text"
+        case_str = "Aa" if self.case_sensitive else "aa"
+        opts = f"[{mode_short}|{regex_str}|{case_str}]"
+        self.stdscr.attron(curses.color_pair(1))
+        self.stdscr.addstr(6, width - len(opts) - 1, opts)
+        self.stdscr.attroff(curses.color_pair(1))
+        self.stdscr.addstr(7, 0, "-" * width)
+
+        # Results header
+        results_start = 8
+        selected_count = sum(1 for r in self.results if r.selected)
+        result_header = f" Results: {len(self.results)} files"
+        if selected_count > 0:
+            result_header += f" ({selected_count} selected)"
+        self.stdscr.attron(curses.color_pair(1))
+        self.stdscr.addstr(results_start, 0, result_header)
+        self.stdscr.attroff(curses.color_pair(1))
+
+        # Results list
+        list_start = results_start + 1
+        list_height = height - list_start - 3  # Leave room for status and help
+
+        # Adjust scroll to keep cursor visible
+        if self.cursor < self.scroll_offset:
+            self.scroll_offset = self.cursor
+        elif self.cursor >= self.scroll_offset + list_height:
+            self.scroll_offset = self.cursor - list_height + 1
+
+        for i in range(list_height):
+            idx = i + self.scroll_offset
+            if idx >= len(self.results):
+                break
+
+            result = self.results[idx]
+            is_cursor = idx == self.cursor
+
+            # Build display line
+            marker = ">" if is_cursor else " "
+            sel_marker = "*" if result.selected else " "
+            name_width = min(30, width // 3)
+            path_width = width - name_width - 6
+
+            y = list_start + i
+            if y < height - 2:
+                # Determine base attribute
+                if is_cursor:
+                    base_attr = curses.color_pair(3) | curses.A_BOLD
+                elif result.selected:
+                    base_attr = curses.color_pair(5)
+                else:
+                    base_attr = 0
+
+                # Draw markers
+                self.stdscr.addstr(y, 0, f" {marker}{sel_marker} ", base_attr)
+
+                # Get match positions for highlighting
+                name_positions = []
+                path_positions = []
+                if self.filter_text:
+                    if self.match_mode in ("filename", "both"):
+                        name_positions = self.get_match_positions(result.name)
+                    if self.match_mode in ("path", "both"):
+                        path_positions = self.get_match_positions(result.path)
+
+                # Draw filename with highlights
+                name_x = 4
+                name_display = result.name[:name_width].ljust(name_width)
+                if name_positions:
+                    self.draw_with_highlights(y, name_x, name_display, name_positions, base_attr, name_x + name_width)
+                else:
+                    self.stdscr.addstr(y, name_x, name_display, base_attr)
+
+                # Draw path with highlights
+                path_x = name_x + name_width + 1
+                path_display = self.truncate(result.path, path_width)
+                if path_positions:
+                    self.draw_with_highlights(y, path_x, path_display, path_positions, base_attr, width - 1)
+                else:
+                    self.stdscr.addstr(y, path_x, path_display, base_attr)
+
+        # Status line
+        if self.status_msg:
+            status_y = height - 2
+            if "Error" in self.status_msg or "failed" in self.status_msg.lower():
+                self.stdscr.attron(curses.color_pair(4))
+            else:
+                self.stdscr.attron(curses.color_pair(2))
+            self.stdscr.addstr(status_y, 0, self.truncate(f" {self.status_msg}", width - 1))
+            self.stdscr.attroff(curses.color_pair(4))
+            self.stdscr.attroff(curses.color_pair(2))
+
+        # Help line
+        help_text = " [↑↓] Nav [^M] Move [^A] All [^D] Dest [^O] Src [^F] Mode [^T] Regex [^G] Case [^R] Rescan [^X] Quit"
+        self.stdscr.attron(curses.A_DIM)
+        self.stdscr.addstr(height - 1, 0, self.truncate(help_text, width - 1))
+        self.stdscr.attroff(curses.A_DIM)
+
+        self.stdscr.refresh()
+
+    def draw_dir_browser(self, prompt: str, start_dir: str, show_recent: bool = False) -> str:
+        """Draw a directory browser dialog. Returns selected path or original."""
+        height, width = self.stdscr.getmaxyx()
+        dialog_height = min(20, height - 4)
+        dialog_width = min(70, width - 4)
+        start_y = (height - dialog_height) // 2
+        start_x = (width - dialog_width) // 2
+
+        current_dir = os.path.abspath(start_dir)
+        cursor = 0
+        scroll = 0
+        type_buffer = ""  # For quick navigation by typing
+
+        while True:
+            # Get directories in current location
+            try:
+                entries = [".."] + sorted([
+                    d for d in os.listdir(current_dir)
+                    if os.path.isdir(os.path.join(current_dir, d)) and not d.startswith(".")
+                ])
+            except PermissionError:
+                entries = [".."]
+
+            # Create dialog window
+            dialog = curses.newwin(dialog_height, dialog_width, start_y, start_x)
+            dialog.keypad(True)  # Enable arrow keys
+            dialog.clear()
+            dialog.box()
+            dialog.addstr(0, 2, f" {prompt} ")
+
+            # Show current path and type buffer
+            path_display = self.truncate(current_dir, dialog_width - 4)
+            dialog.attron(curses.color_pair(1))
+            dialog.addstr(1, 2, path_display)
+            dialog.attroff(curses.color_pair(1))
+
+            # Show type buffer if active
+            if type_buffer:
+                dialog.attron(curses.color_pair(3))
+                dialog.addstr(2, 2, f"Jump: {type_buffer}_")
+                dialog.attroff(curses.color_pair(3))
+
+            # List area
+            list_start = 3
+            list_height = dialog_height - 5
+
+            # Adjust scroll
+            if cursor < scroll:
+                scroll = cursor
+            elif cursor >= scroll + list_height:
+                scroll = cursor - list_height + 1
+
+            for i in range(list_height):
+                idx = i + scroll
+                if idx >= len(entries):
+                    break
+
+                entry = entries[idx]
+                is_cursor = idx == cursor
+
+                if entry == "..":
+                    display = "📁 .."
+                else:
+                    display = f"📁 {entry}"
+
+                display = self.truncate(display, dialog_width - 6)
+
+                if is_cursor:
+                    dialog.attron(curses.color_pair(3) | curses.A_BOLD)
+                    dialog.addstr(list_start + i, 2, f"> {display}")
+                    dialog.attroff(curses.color_pair(3) | curses.A_BOLD)
+                else:
+                    dialog.addstr(list_start + i, 2, f"  {display}")
+
+            # Help line
+            help_text = "[↑↓] Nav [Enter] Open [Space] Select [~] Home [Esc] Cancel"
+            dialog.addstr(dialog_height - 2, 2, self.truncate(help_text, dialog_width - 4))
+
+            dialog.refresh()
+
+            key = dialog.getch()
+
+            if key == 27:  # ESC
+                if type_buffer:
+                    type_buffer = ""  # Clear type buffer first
+                else:
+                    return start_dir  # Cancel
+
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                if type_buffer:
+                    type_buffer = type_buffer[:-1]
+
+            elif key == curses.KEY_UP:
+                cursor = max(0, cursor - 1)
+                type_buffer = ""
+
+            elif key == curses.KEY_DOWN:
+                cursor = min(len(entries) - 1, cursor + 1)
+                type_buffer = ""
+
+            elif key == curses.KEY_PPAGE:
+                cursor = max(0, cursor - list_height)
+                type_buffer = ""
+
+            elif key == curses.KEY_NPAGE:
+                cursor = min(len(entries) - 1, cursor + list_height)
+                type_buffer = ""
+
+            elif key in (curses.KEY_ENTER, 10, 13):
+                # Enter directory
+                type_buffer = ""
+                if entries[cursor] == "..":
+                    current_dir = os.path.dirname(current_dir)
+                else:
+                    current_dir = os.path.join(current_dir, entries[cursor])
+                cursor = 0
+                scroll = 0
+
+            elif key == ord(' '):
+                # Select current directory
+                return current_dir
+
+            elif key == curses.KEY_LEFT:
+                # Go up
+                current_dir = os.path.dirname(current_dir)
+                cursor = 0
+                scroll = 0
+                type_buffer = ""
+
+            elif key == curses.KEY_RIGHT:
+                # Enter selected dir
+                type_buffer = ""
+                if entries[cursor] == "..":
+                    current_dir = os.path.dirname(current_dir)
+                else:
+                    current_dir = os.path.join(current_dir, entries[cursor])
+                cursor = 0
+                scroll = 0
+
+            elif key == ord('~'):
+                # Go to home
+                current_dir = str(Path.home())
+                cursor = 0
+                scroll = 0
+                type_buffer = ""
+
+            elif 32 <= key <= 126:
+                # Printable char - add to type buffer and jump
+                type_buffer += chr(key).lower()
+                # Find first entry starting with type_buffer
+                for i, entry in enumerate(entries):
+                    if entry.lower().startswith(type_buffer):
+                        cursor = i
+                        break
+
+    def draw_recent_destinations(self) -> Optional[str]:
+        """Show recent destinations picker. Returns selected path or None."""
+        if not self.config.recent_destinations:
+            return None
+
+        height, width = self.stdscr.getmaxyx()
+        recent = self.config.recent_destinations
+        dialog_height = min(len(recent) + 4, height - 4)
+        dialog_width = min(70, width - 4)
+        start_y = (height - dialog_height) // 2
+        start_x = (width - dialog_width) // 2
+
+        cursor = 0
+
+        while True:
+            dialog = curses.newwin(dialog_height, dialog_width, start_y, start_x)
+            dialog.keypad(True)
+            dialog.clear()
+            dialog.box()
+            dialog.addstr(0, 2, " Recent Destinations [B] Browse ")
+
+            list_start = 1
+            for i, dest in enumerate(recent):
+                if i >= dialog_height - 3:
+                    break
+                is_cursor = i == cursor
+                display = self.truncate(dest, dialog_width - 6)
+
+                if is_cursor:
+                    dialog.attron(curses.color_pair(3) | curses.A_BOLD)
+                    dialog.addstr(list_start + i, 2, f"> {display}")
+                    dialog.attroff(curses.color_pair(3) | curses.A_BOLD)
+                else:
+                    dialog.addstr(list_start + i, 2, f"  {display}")
+
+            dialog.addstr(dialog_height - 2, 2, "[↑↓] Nav [Enter] Select [B] Browse [Esc] Cancel")
+            dialog.refresh()
+
+            key = dialog.getch()
+
+            if key == 27:  # ESC
+                return None
+
+            elif key == curses.KEY_UP:
+                cursor = max(0, cursor - 1)
+
+            elif key == curses.KEY_DOWN:
+                cursor = min(len(recent) - 1, cursor + 1)
+
+            elif key in (curses.KEY_ENTER, 10, 13):
+                return recent[cursor]
+
+            elif key in (ord('b'), ord('B')):
+                # Switch to browser
+                del dialog
+                return self.draw_dir_browser("Select Destination", self.config.destination)
+
+    def draw_input_dialog(self, prompt: str, current: str) -> str:
+        """Draw an input dialog and return the result."""
+        height, width = self.stdscr.getmaxyx()
+        dialog_width = min(60, width - 4)
+        dialog_height = 5
+        start_y = (height - dialog_height) // 2
+        start_x = (width - dialog_width) // 2
+
+        # Create dialog window
+        dialog = curses.newwin(dialog_height, dialog_width, start_y, start_x)
+        dialog.box()
+        dialog.addstr(0, 2, f" {prompt} ")
+
+        buffer = current
+        cursor_pos = len(buffer)
+
+        while True:
+            # Draw input field
+            input_width = dialog_width - 4
+            display_start = max(0, cursor_pos - input_width + 1)
+            display_text = buffer[display_start:display_start + input_width]
+
+            dialog.addstr(2, 2, " " * input_width)
+            dialog.addstr(2, 2, display_text)
+            dialog.move(2, 2 + min(cursor_pos, input_width - 1))
+            dialog.refresh()
+
+            key = dialog.getch()
+
+            if key == 27:  # ESC
+                return current
+            elif key in (curses.KEY_ENTER, 10, 13):
+                return buffer
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                if cursor_pos > 0:
+                    buffer = buffer[:cursor_pos-1] + buffer[cursor_pos:]
+                    cursor_pos -= 1
+            elif key == curses.KEY_LEFT:
+                cursor_pos = max(0, cursor_pos - 1)
+            elif key == curses.KEY_RIGHT:
+                cursor_pos = min(len(buffer), cursor_pos + 1)
+            elif key == curses.KEY_HOME:
+                cursor_pos = 0
+            elif key == curses.KEY_END:
+                cursor_pos = len(buffer)
+            elif 32 <= key <= 126:
+                buffer = buffer[:cursor_pos] + chr(key) + buffer[cursor_pos:]
+                cursor_pos += 1
+
+    def confirm_dialog(self, message: str) -> bool:
+        """Show a yes/no confirmation dialog."""
+        height, width = self.stdscr.getmaxyx()
+        dialog_width = min(len(message) + 10, width - 4)
+        dialog_height = 5
+        start_y = (height - dialog_height) // 2
+        start_x = (width - dialog_width) // 2
+
+        dialog = curses.newwin(dialog_height, dialog_width, start_y, start_x)
+        dialog.box()
+        dialog.addstr(1, 2, message[:dialog_width-4])
+        dialog.addstr(3, 2, "[Y] Yes  [N] No")
+        dialog.refresh()
+
+        while True:
+            key = dialog.getch()
+            if key in (ord('y'), ord('Y')):
+                return True
+            elif key in (ord('n'), ord('N'), 27):  # n, N, or ESC
+                return False
+
+    def conflict_dialog(self, filename: str) -> str:
+        """Show dialog for file conflict. Returns 'overwrite', 'skip', or 'rename'."""
+        height, width = self.stdscr.getmaxyx()
+        message = f"'{filename}' exists in destination"
+        dialog_width = min(max(len(message) + 6, 45), width - 4)
+        dialog_height = 6
+        start_y = (height - dialog_height) // 2
+        start_x = (width - dialog_width) // 2
+
+        dialog = curses.newwin(dialog_height, dialog_width, start_y, start_x)
+        dialog.box()
+        dialog.addstr(1, 2, message[:dialog_width-4])
+        dialog.addstr(3, 2, "[O] Overwrite  [S] Skip  [R] Rename")
+        dialog.addstr(4, 2, "[ESC] Cancel")
+        dialog.refresh()
+
+        while True:
+            key = dialog.getch()
+            if key in (ord('o'), ord('O')):
+                return "overwrite"
+            elif key in (ord('s'), ord('S')):
+                return "skip"
+            elif key in (ord('r'), ord('R')):
+                return "rename"
+            elif key == 27:  # ESC
+                return "cancel"
+
+    def scan_files(self):
+        """Scan all files in search dir recursively."""
+        search_dir = self.config.search_dir
+        full_pattern = os.path.join(search_dir, "**", "*")
+
+        self.status_msg = "Scanning..."
+        self.draw()
+
+        try:
+            matches = glob.glob(full_pattern, recursive=True)
+            # Filter out directories
+            matches = [m for m in matches if os.path.isfile(m)]
+            self.all_results = [FileResult(m) for m in sorted(matches)]
+            self.filter_text = ""
+            self.apply_filter()
+            self.status_msg = f"Scanned {len(self.all_results)} files"
+        except Exception as e:
+            self.status_msg = f"Error: {e}"
+            self.all_results = []
+            self.results = []
+
+    def get_match_positions(self, text: str) -> List[tuple]:
+        """Find all match positions in text. Returns list of (start, end) tuples."""
+        if not self.filter_text:
+            return []
+
+        flags = 0 if self.case_sensitive else re.IGNORECASE
+        positions = []
+
+        try:
+            if self.use_regex:
+                pattern = re.compile(self.filter_text, flags)
+            else:
+                pattern = re.compile(re.escape(self.filter_text), flags)
+
+            for match in pattern.finditer(text):
+                positions.append((match.start(), match.end()))
+        except re.error:
+            pass
+
+        return positions
+
+    def matches_filter(self, result: FileResult) -> bool:
+        """Check if result matches current filter."""
+        if not self.filter_text:
+            return True
+
+        flags = 0 if self.case_sensitive else re.IGNORECASE
+
+        try:
+            if self.use_regex:
+                pattern = re.compile(self.filter_text, flags)
+            else:
+                pattern = re.compile(re.escape(self.filter_text), flags)
+
+            if self.match_mode == "filename":
+                return bool(pattern.search(result.name))
+            elif self.match_mode == "path":
+                return bool(pattern.search(result.path))
+            else:  # both
+                return bool(pattern.search(result.name) or pattern.search(result.path))
+        except re.error:
+            # Invalid regex
+            return False
+
+    def apply_filter(self):
+        """Filter results based on filter_text and current settings."""
+        if not self.filter_text:
+            self.results = self.all_results[:]
+        else:
+            self.results = [r for r in self.all_results if self.matches_filter(r)]
+        self.cursor = 0
+        self.scroll_offset = 0
+
+    def move_file(self, result: FileResult) -> bool:
+        """Move a single file to destination. Returns True on success."""
+        dest_path = os.path.join(self.config.destination, result.name)
+
+        # Check for conflict
+        if os.path.exists(dest_path):
+            action = self.conflict_dialog(result.name)
+            if action == "cancel" or action == "skip":
+                return False
+            elif action == "rename":
+                # Generate unique name
+                base, ext = os.path.splitext(result.name)
+                counter = 1
+                while os.path.exists(dest_path):
+                    dest_path = os.path.join(self.config.destination, f"{base}_{counter}{ext}")
+                    counter += 1
+            # overwrite: just proceed
+
+        try:
+            shutil.move(result.path, dest_path)
+            return True
+        except Exception as e:
+            self.status_msg = f"Error moving {result.name}: {e}"
+            return False
+
+    def move_current(self):
+        """Move the file under cursor."""
+        if not self.results:
+            self.status_msg = "No files to move"
+            return
+
+        result = self.results[self.cursor]
+        if self.move_file(result):
+            self.status_msg = f"Moved: {result.name}"
+            # Save destination to recent
+            self.config.add_recent_destination(self.config.destination)
+            self.config.save()
+            # Remove from both lists
+            if result in self.all_results:
+                self.all_results.remove(result)
+            if result in self.results:
+                self.results.remove(result)
+            if self.cursor >= len(self.results) and self.cursor > 0:
+                self.cursor -= 1
+
+    def move_selected(self):
+        """Move all selected files."""
+        selected = [r for r in self.results if r.selected]
+        if not selected:
+            self.status_msg = "No files selected"
+            return
+
+        if not self.confirm_dialog(f"Move {len(selected)} files?"):
+            return
+
+        moved = 0
+        for result in selected:
+            if self.move_file(result):
+                moved += 1
+
+        if moved > 0:
+            # Save destination to recent
+            self.config.add_recent_destination(self.config.destination)
+            self.config.save()
+
+        # Remove moved files from both lists
+        self.all_results = [r for r in self.all_results if os.path.exists(r.path)]
+        self.results = [r for r in self.results if os.path.exists(r.path)]
+
+        if self.cursor >= len(self.results) and self.cursor > 0:
+            self.cursor = len(self.results) - 1
+
+        self.status_msg = f"Moved {moved} files"
+
+    def run(self):
+        """Main event loop."""
+        curses.curs_set(0)  # Hide cursor
+        self.stdscr.keypad(True)
+
+        # Initial scan
+        self.scan_files()
+
+        while True:
+            self.draw()
+            key = self.stdscr.getch()
+
+            if key == 24:  # Ctrl+X - quit
+                break
+
+            elif key == 27:  # ESC - clear filter
+                self.filter_text = ""
+                self.apply_filter()
+
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                # Backspace - remove last filter char
+                if self.filter_text:
+                    self.filter_text = self.filter_text[:-1]
+                    self.apply_filter()
+
+            elif key == 18:  # Ctrl+R - rescan
+                self.scan_files()
+
+            elif key == 6:  # Ctrl+F - cycle match mode
+                modes = ["filename", "path", "both"]
+                current_idx = modes.index(self.match_mode)
+                self.match_mode = modes[(current_idx + 1) % len(modes)]
+                self.apply_filter()
+                self.status_msg = f"Match mode: {self.match_mode}"
+
+            elif key == 20:  # Ctrl+T - toggle regex
+                self.use_regex = not self.use_regex
+                self.apply_filter()
+                self.status_msg = f"Regex: {'on' if self.use_regex else 'off'}"
+
+            elif key == 7:  # Ctrl+G - toggle case sensitivity
+                self.case_sensitive = not self.case_sensitive
+                self.apply_filter()
+                self.status_msg = f"Case sensitive: {'on' if self.case_sensitive else 'off'}"
+
+            elif key == 4:  # Ctrl+D - destination
+                # Show recent destinations if available, otherwise browse
+                if self.config.recent_destinations:
+                    new_dest = self.draw_recent_destinations()
+                else:
+                    new_dest = self.draw_dir_browser("Select Destination", self.config.destination)
+
+                if new_dest and os.path.isdir(new_dest):
+                    self.config.destination = new_dest
+                    self.config.add_recent_destination(new_dest)
+                    self.config.save()
+                    self.status_msg = f"Destination: {new_dest}"
+                elif new_dest:
+                    if self.confirm_dialog(f"Create '{new_dest}'?"):
+                        try:
+                            os.makedirs(new_dest, exist_ok=True)
+                            self.config.destination = new_dest
+                            self.config.add_recent_destination(new_dest)
+                            self.config.save()
+                            self.status_msg = f"Created: {new_dest}"
+                        except Exception as e:
+                            self.status_msg = f"Error: {e}"
+
+            elif key == 15:  # Ctrl+O - open/change search directory
+                # Change search directory with browser
+                new_src = self.draw_dir_browser("Select Search Directory", self.config.search_dir)
+                if new_src and os.path.isdir(new_src):
+                    self.config.search_dir = new_src
+                    self.config.save()
+                    self.status_msg = f"Search dir: {new_src}"
+                    self.scan_files()
+                elif new_src:
+                    self.status_msg = f"Directory not found: {new_src}"
+
+            elif key == curses.KEY_UP:
+                if self.cursor > 0:
+                    self.cursor -= 1
+
+            elif key == curses.KEY_DOWN:
+                if self.cursor < len(self.results) - 1:
+                    self.cursor += 1
+
+            elif key == curses.KEY_PPAGE:  # Page Up
+                self.cursor = max(0, self.cursor - 10)
+
+            elif key == curses.KEY_NPAGE:  # Page Down
+                self.cursor = min(len(self.results) - 1, self.cursor + 10)
+
+            elif key == curses.KEY_HOME:
+                self.cursor = 0
+
+            elif key == curses.KEY_END:
+                self.cursor = max(0, len(self.results) - 1)
+
+            elif key == ord(' '):
+                # Toggle selection
+                if self.results:
+                    self.results[self.cursor].selected = not self.results[self.cursor].selected
+                    if self.cursor < len(self.results) - 1:
+                        self.cursor += 1
+
+            elif key in (curses.KEY_ENTER, 10, 13):
+                # Ctrl+M / Enter - move current file
+                self.move_current()
+
+            elif key == 1:  # Ctrl+A - move all selected
+                self.move_selected()
+
+            elif 32 <= key <= 126:
+                # Printable character - add to filter
+                self.filter_text += chr(key)
+                self.apply_filter()
+
+
+def main(stdscr):
+    app = TuiMover(stdscr)
+    app.run()
+
+
+if __name__ == "__main__":
+    curses.wrapper(main)

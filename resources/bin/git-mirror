@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+import subprocess
+import sys
+import argparse
+
+
+def run(cmd, check=True, capture_output=False, dry_run=False, is_write=False):
+    print(f"+ {' '.join(cmd)}")
+    if dry_run and is_write:
+        print("  (dry-run: skipped)")
+        return None
+    return subprocess.run(
+        cmd,
+        check=check,
+        text=True,
+        capture_output=capture_output,
+    )
+
+
+def get_source_branches(source_remote: str):
+    """Get branches from source remote using ls-remote instead of local refs."""
+    # Use ls-remote to get branches directly from the remote
+    # This is more reliable than checking local remote-tracking branches
+    result = run(
+        ["git", "ls-remote", "--heads", source_remote],
+        capture_output=True,
+    )
+    branches = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        refname = parts[1]
+        prefix = "refs/heads/"
+        if refname.startswith(prefix):
+            branches.append(refname[len(prefix) :])
+    return sorted(set(branches))
+
+
+def get_target_branches(target_remote: str):
+    # git ls-remote --heads <remote> => "<hash>\trefs/heads/<branch>"
+    result = run(
+        ["git", "ls-remote", "--heads", target_remote],
+        capture_output=True,
+    )
+    branches = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        refname = parts[1]
+        prefix = "refs/heads/"
+        if refname.startswith(prefix):
+            branches.append(refname[len(prefix) :])
+    return sorted(set(branches))
+
+
+def get_tags(remote: str):
+    # git ls-remote --tags <remote> => "<hash>\trefs/tags/<tag>" (plus "^{}" lines for annotated tags)
+    result = run(
+        ["git", "ls-remote", "--tags", remote],
+        capture_output=True,
+    )
+    tags = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        refname = parts[1]
+        # skip dereferenced annotated tag lines ending with ^{}
+        if refname.endswith("^{}"):
+            continue
+        prefix = "refs/tags/"
+        if refname.startswith(prefix):
+            tags.add(refname[len(prefix) :])
+    return tags
+
+
+def get_head_ref(remote: str):
+    """Get the symbolic HEAD reference (default branch) from remote."""
+    result = run(
+        ["git", "ls-remote", "--symref", remote, "HEAD"],
+        capture_output=True,
+    )
+    # Output format: "ref: refs/heads/main\tHEAD\n<hash>\tHEAD"
+    for line in result.stdout.splitlines():
+        if line.startswith("ref:"):
+            parts = line.split()
+            if len(parts) >= 2:
+                ref = parts[1]  # e.g., "refs/heads/main"
+                prefix = "refs/heads/"
+                if ref.startswith(prefix):
+                    return ref[len(prefix):]
+    return None
+
+
+def batch_items(items, batch_size=100):
+    """Split items into batches."""
+    for i in range(0, len(items), batch_size):
+        yield items[i:i + batch_size]
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Mirror branches and tags from source remote to target remote"
+    )
+    parser.add_argument("source_remote", help="Source remote to mirror from")
+    parser.add_argument("target_remote", help="Target remote to mirror to")
+    parser.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Force push branches and tags (required for true mirroring)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        "-n",
+        action="store_true",
+        help="Show what would be done without making any changes (fetches but doesn't push/delete)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Number of refs to push/delete in a single command (default: 100)",
+    )
+
+    args = parser.parse_args()
+
+    source_remote = args.source_remote
+    target_remote = args.target_remote
+    force = args.force
+    dry_run = args.dry_run
+    batch_size = args.batch_size
+
+    if dry_run:
+        print("=== DRY RUN MODE (read-only) ===\n")
+
+    print(f"Fetching from {source_remote} and {target_remote}...")
+    # Fetch all branches from source into local refs/heads/* (works for both bare and non-bare repos)
+    # Using explicit refspec ensures all remote branches are available locally
+    run(["git", "fetch", source_remote, "+refs/heads/*:refs/heads/*", "--prune"])
+    # Also grab tags from source into local repo
+    run(["git", "fetch", source_remote, "--tags", "--prune"])
+    run(["git", "fetch", target_remote, "--prune"])
+
+    print(f"\nCollecting branches from {source_remote}...")
+    source_branches = get_source_branches(source_remote)
+    print(f"  Found {len(source_branches)} branches on {source_remote}")
+    if source_branches:
+        print(f"  Branches: {', '.join(source_branches[:10])}{' ...' if len(source_branches) > 10 else ''}")
+
+    print(f"\nCollecting branches from {target_remote}...")
+    target_branches = get_target_branches(target_remote)
+    print(f"  Found {len(target_branches)} branches on {target_remote}")
+    if target_branches:
+        print(f"  Branches: {', '.join(target_branches[:10])}{' ...' if len(target_branches) > 10 else ''}")
+
+    # Safety check: don't delete all branches if source has none
+    if not source_branches:
+        print(f"\n⚠️  ERROR: No branches found on {source_remote}!")
+        print(f"   This would delete all branches on {target_remote}.")
+        print(f"   Please check your source remote configuration.")
+        sys.exit(1)
+
+    # Push / update branches in batches
+    print(f"\nPushing branches from {source_remote} to {target_remote}...")
+    force_flag = ["--force"] if force else []
+
+    for i, batch in enumerate(batch_items(source_branches, batch_size)):
+        # Use local refs/heads/* (populated by our fetch with explicit refspec)
+        refspecs = [f"refs/heads/{b}:refs/heads/{b}" for b in batch]
+        print(f"  → Batch {i+1}: Pushing {len(batch)} branches")
+        if len(batch) <= 5:
+            print(f"     {', '.join(batch)}")
+        run(
+            ["git", "push", *force_flag, target_remote, *refspecs],
+            dry_run=dry_run,
+            is_write=True,
+        )
+
+    # Delete branches that no longer exist on source
+    source_branch_set = set(source_branches)
+    print(
+        f"\nDeleting branches on {target_remote} that no longer exist on {source_remote}..."
+    )
+    branches_to_delete = [b for b in target_branches if b not in source_branch_set]
+    if branches_to_delete:
+        print(f"  Found {len(branches_to_delete)} branches to delete")
+        for i, batch in enumerate(batch_items(branches_to_delete, batch_size)):
+            refspecs = [f":refs/heads/{b}" for b in batch]
+            print(f"  → Batch {i+1}: Deleting {len(batch)} branches")
+            if len(batch) <= 5:
+                print(f"     {', '.join(batch)}")
+            run(
+                ["git", "push", target_remote, *refspecs],
+                dry_run=dry_run,
+                is_write=True,
+            )
+    else:
+        print("  (no branches to delete)")
+
+    # Tags: mirror create/update + deletions
+    print(f"\nCollecting tags from {source_remote} and {target_remote}...")
+    source_tags = get_tags(source_remote)
+    target_tags = get_tags(target_remote)
+    print(f"  {source_remote}: {len(source_tags)} tags")
+    print(f"  {target_remote}: {len(target_tags)} tags")
+
+    print(f"\nPushing tags from {source_remote} to {target_remote}...")
+    source_tags_sorted = sorted(source_tags)
+    for i, batch in enumerate(batch_items(source_tags_sorted, batch_size)):
+        refspecs = [f"refs/tags/{tag}:refs/tags/{tag}" for tag in batch]
+        print(f"  → Batch {i+1}: Pushing {len(batch)} tags")
+        if len(batch) <= 5:
+            print(f"     {', '.join(batch)}")
+        run(
+            ["git", "push", *force_flag, target_remote, *refspecs],
+            dry_run=dry_run,
+            is_write=True,
+        )
+
+    # Delete tags that no longer exist on source
+    tags_to_delete = sorted(target_tags - source_tags)
+    print(
+        f"\nDeleting tags on {target_remote} that no longer exist on {source_remote}..."
+    )
+    if tags_to_delete:
+        print(f"  Found {len(tags_to_delete)} tags to delete")
+        for i, batch in enumerate(batch_items(tags_to_delete, batch_size)):
+            refspecs = [f":refs/tags/{tag}" for tag in batch]
+            print(f"  → Batch {i+1}: Deleting {len(batch)} tags")
+            if len(batch) <= 5:
+                print(f"     {', '.join(batch)}")
+            run(
+                ["git", "push", target_remote, *refspecs],
+                dry_run=dry_run,
+                is_write=True,
+            )
+    else:
+        print("  (no tags to delete)")
+
+    # Sync HEAD reference (default branch)
+    print(f"\nSyncing HEAD reference (default branch)...")
+    source_head = get_head_ref(source_remote)
+    target_head = get_head_ref(target_remote)
+    print(f"  {source_remote} HEAD → {source_head}")
+    print(f"  {target_remote} HEAD → {target_head}")
+
+    if source_head:
+        if source_head != target_head:
+            print(f"  → Setting {target_remote} HEAD to {source_head}")
+            run(
+                [
+                    "git",
+                    "symbolic-ref",
+                    f"refs/remotes/{target_remote}/HEAD",
+                    f"refs/remotes/{target_remote}/{source_head}",
+                ],
+                dry_run=dry_run,
+                is_write=True,
+            )
+            # Note: This only sets the local symbolic ref. To set it on the remote,
+            # you need direct access to the remote repository or use hosting platform APIs.
+            # For GitHub/GitLab, you'd use their web UI or API.
+            print(f"  ⚠ Note: Remote HEAD must be set via hosting platform (GitHub/GitLab UI or API)")
+        else:
+            print(f"  ✓ HEAD already matches")
+    else:
+        print(f"  ⚠ Could not determine HEAD from {source_remote}")
+
+    print(
+        f"\nDone! {target_remote} should now mirror branches & tags from {source_remote}."
+    )
+    if dry_run:
+        print("\n=== DRY RUN COMPLETE (no changes made) ===")
+
+
+if __name__ == "__main__":
+    main()

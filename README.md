@@ -1,47 +1,113 @@
-# Setup a Mac
+# Mac Setup
 
+This repo captures the parts of this Mac that are useful after a fresh install: packages, dotfiles, git hooks, command-line utilities, Automator Services, and macOS defaults.
 
-## Programs to install
+The current computer is treated as the source of truth, but secrets must stay out of git.
 
-- Macdown
-- IP in menubar: https://www.monkeybreadsoftware.de/Software/IPinmenubar.shtml
-- Paste: https://pasteapp.me
-- https://imageoptim.com/mac
+## Interactive Restore
 
+For a fresh install, the recommended entry point is the interactive restore script:
 
-# Xcode
+```bash
+cd ~/repo/config
+./scripts/restore-interactive.sh
+```
 
-## Create file templates
+It walks through the restore flow one step at a time and asks before running each major action:
 
-Take templates from `/Applications/Xcode.app/Contents/Developer/Library/Xcode/Templates/File\ Templates`
+1. Show these instructions.
+2. Install Xcode Command Line Tools.
+3. Check whether Homebrew is installed and open <https://brew.sh> if needed.
+4. Preview bootstrap changes with `./scripts/bootstrap.sh --dry-run`.
+5. Restore dotfiles, Services, git hooks, and `~/bin` with `./scripts/bootstrap.sh`.
+6. Check package restore status with `brew bundle check --file Brewfile --verbose`.
+7. Restore Homebrew/App Store/editor/npm/pipx/Cargo packages with `./scripts/bootstrap.sh --packages`.
+8. Apply macOS defaults with `./scripts/macos-defaults.sh`.
+9. Create or open `~/.bash_profile.local` for private tokens and machine-specific values.
 
-Create a folder named `Custom` in `~/Library/Developer/Xcode/Templates/` then just find `.xctemplate`s in Xcode.app-subfolder and put in `Custom`.
+The bootstrap step is non-destructive: existing files are moved to `~/.config-bootstrap-backups/<timestamp>/` before repo-managed files are linked or copied.
 
-## Key bindings
+## Manual Restore
 
-Put `David.idekeybindings` in:
-`/Users/daveve/Library/Developer/Xcode/UserData/KeyBindings/`
+Use this if you do not want the guided flow.
 
-# LLDB
+1. Install Xcode Command Line Tools:
 
-command script import lldb.macosx.crashlog
-save_crashlog /some/path/reason_why_crashed.crash
+   ```bash
+   xcode-select --install
+   ```
 
-# Finder
+2. Install Homebrew from <https://brew.sh>.
 
-**************************************
-Terminal commands (paste the entire string)
-**************************************
-𝗙𝗮𝘀𝘁𝗲𝗿 𝗗𝗼𝗰𝗸 𝗛𝗶𝗱𝗶𝗻𝗴: defaults write com.apple.dock autohide-delay -float 0; defaults write com.apple.dock autohide-time-modifier -int 0;killall Dock
-𝗙𝗮𝘀𝘁𝗲𝗿 𝗗𝗼𝗰𝗸 𝗛𝗶𝗱𝗶𝗻𝗴 𝗨𝗻𝗱𝗼: defaults write com.apple.dock autohide-delay -float 0.5; defaults write com.apple.dock autohide-time-modifier -int 0.5 ;killall Dock
+3. Clone this repo:
 
-𝗔𝗱𝗱 𝗗𝗼𝗰𝗸 𝗦𝗽𝗮𝗰𝗲𝗿 (paste for each spacer): defaults write com.apple.dock persistent-apps -array-add '{tile-data={}; tile-type="spacer-tile";}' && killall Dock
-𝗔𝗱𝗱 𝗛𝗮𝗹𝗳-𝗛𝗲𝗶𝗴𝗵𝘁 𝗗𝗼𝗰𝗸 𝗦𝗽𝗮𝗰𝗲𝗿 (paste for each): defaults write com.apple.dock persistent-apps -array-add '{"tile-type"="small-spacer-tile";}' && killall Dock
+   ```bash
+   git clone git@github.com:everlof/config.git ~/repo/config
+   cd ~/repo/config
+   ```
 
-𝗗𝗶𝘀𝗮𝗯𝗹𝗲 𝗔𝗻𝗻𝗼𝘆𝗶𝗻𝗴 𝗗𝗶𝘀𝗸 𝗪𝗮𝗿𝗻𝗶𝗻𝗴 (must restart Mac to take effect): sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.DiskArbitration.diskarbitrationd.plist DADisableEjectNotification -bool YES && sudo pkill diskarbitrationd
-𝗥𝗲-𝗘𝗻𝗮𝗯𝗹𝗲 𝗔𝗻𝗻𝗼𝘆𝗶𝗻𝗴 𝗗𝗶𝘀𝗸 𝗪𝗮𝗿𝗻𝗶𝗻𝗴: sudo defaults delete /Library/Preferences/SystemConfiguration/com.apple.DiskArbitration.diskarbitrationd.plist DADisableEjectNotification && sudo pkill diskarbitrationd
-𝗔𝗹𝘁𝗲𝗿𝗻𝗮𝘁𝗲𝗹𝘆, 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱 𝗘𝗷𝗲𝗰𝘁𝗶𝗳𝘆: https://ejectify.app
+4. Restore dotfiles, Services, git hooks, and `~/bin` utilities:
 
-𝗖𝗵𝗮𝗻𝗴𝗲 𝗦𝗰𝗿𝗲𝗲𝗻𝘀𝗵𝗼𝘁 𝗗𝗲𝗳𝗮𝘂𝗹𝘁 𝘁𝗼 𝗝𝗣𝗚 (replace with png to undo): defaults write com.apple.screencapture type jpg
+   ```bash
+   ./scripts/bootstrap.sh
+   ```
 
-𝗠𝗮𝗸𝗲 𝗛𝗶𝗱𝗱𝗲𝗻 𝗔𝗽𝗽𝘀 𝗧𝗿𝗮𝗻𝘀𝗽𝗮𝗿𝗲𝗻𝘁: defaults write com.apple.Dock showhidden -bool TRUE && killall Dock
+5. Restore Homebrew, App Store, VS Code, npm, pipx, and Cargo packages:
+
+   ```bash
+   ./scripts/bootstrap.sh --packages
+   ```
+
+6. Add private values to `~/.bash_profile.local`. Use [resources/bash_profile.local.example](resources/bash_profile.local.example) as the template.
+
+7. Apply macOS preferences:
+
+   ```bash
+   ./scripts/macos-defaults.sh
+   ```
+
+## What Is Managed
+
+- [Brewfile](Brewfile): Homebrew taps, formulae, casks, Mac App Store apps, VS Code extensions, and Cargo packages captured by `brew bundle dump`.
+- [resources/bash_profile](resources/bash_profile): public shell setup, aliases, prompt, paths, and tool integration.
+- [resources/gitconfig](resources/gitconfig): global Git defaults, aliases, hooks path, Git LFS, rerere, GitHub credential helpers.
+- [resources/git-hooks](resources/git-hooks): global Git hooks.
+- [resources/git-templates](resources/git-templates): hooks for newly initialized repos.
+- [resources/bin](resources/bin): personal command-line utilities linked into `~/bin`.
+- [resources/Services](resources/Services): Automator Services installed into `~/Library/Services`.
+- [resources/vscode/extensions.txt](resources/vscode/extensions.txt): VS Code extension inventory.
+- [resources/cursor/extensions.txt](resources/cursor/extensions.txt): Cursor extension inventory.
+- [resources/npm/global-packages.txt](resources/npm/global-packages.txt): npm global packages not represented by Homebrew.
+- [resources/pipx/apps.txt](resources/pipx/apps.txt): pipx apps.
+- [resources/cargo/packages.txt](resources/cargo/packages.txt): cargo-installed package names.
+- [resources/apps/applications.txt](resources/apps/applications.txt): observed `/Applications` inventory for apps not managed by Homebrew or the App Store.
+
+## Updating From This Mac
+
+Run:
+
+```bash
+./scripts/capture-current.sh
+```
+
+Then review the diff carefully before committing. This script intentionally captures package/tool inventories and safe script directories. It does not copy `~/.bash_profile` or `~/.gitconfig` automatically because those files can contain secrets or machine-specific paths that should be normalized first.
+
+## Secrets
+
+Do not commit tokens, private keys, cloud credentials, or project-specific secrets. Put them in:
+
+```bash
+~/.bash_profile.local
+```
+
+The managed [resources/bash_profile](resources/bash_profile) sources that file if it exists.
+
+## Current Machine Notes
+
+Observed on this Mac when refreshed:
+
+- macOS `26.0.1`
+- Homebrew prefix `/opt/homebrew`
+- Shell `/bin/bash`
+- Selected Xcode `/Applications/Xcode-26.1.1.app`
+- Homebrew services started: `postgresql@17`, `tor`

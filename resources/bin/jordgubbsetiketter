@@ -1,0 +1,23 @@
+#!/bin/bash
+
+for i in $(seq 1 30); do
+  export BOTTLE="$i"
+  cat <<EOF | nc -w 3 192.168.1.74 9100
+^XA
+^CI28
+^PW608
+^LL400
+
+^FO59,50^CF0,41^FDDessertvin^FS
+
+^FO59,103^A0N,73,70^FDJordgubbe^FS
+
+^FO59,210^CF0,24^FD750ml | 17 % vol.^FS
+^FO59,302^CF0,18^FDBrewed by: Lina & David^FS
+^FO59,330^CF0,18^FDBottle: #$BOTTLE | Batch: 25-08^FS
+^FO59,181^GB476,0,4,B,0^FS
+
+^XZ
+
+EOF
+done

@@ -1,0 +1,7 @@
+cargo-deny
+cargo-insta
+cargo-llvm-cov
+cargo-sweep
+cbindgen
+naga-cli
+wasm-pack

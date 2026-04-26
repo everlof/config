@@ -1,42 +1,79 @@
-[alias]
-lg1 = log --graph --abbrev-commit --decorate --format=format:'%C(bold blue)%h%C(reset) - %C(bold green)(%ar)%C(reset) %C(white)%s%C(reset) %C(dim white)- %an%C(reset)%C(bold yellow)%d%C(reset)' --all
-lg2 = log --graph --abbrev-commit --decorate --format=format:'%C(bold blue)%h%C(reset) - %C(bold cyan)%aD%C(reset) %C(bold green)(%ar)%C(reset)%C(bold yellow)%d%C(reset)%n''          %C(white)%s%C(reset) %C(dim white)- %an%C(reset)' --all
-lg = !"git lg1"
-rh = reset --hard
-co = checkout --recurse-submodules
-ci = commit
-st = status
-b = branch
-s = status
-c = commit
-a = add
-rb = rebase
-change-commits = "!f() { VAR=$1; OLD=$2; NEW=$3; shift 3; git filter-branch --env-filter \"if [[ \\\"$`echo $VAR`\\\" = '$OLD' ]]; then export $VAR='$NEW'; fi\" $@; }; f "
-ll = log --pretty=format:"%C(yellow)%h%Cred%d\\ %Creset%s%Cblue\\ [%cn]" --decorate --numstat
-	ignore = "!gi() { curl -L -s https://www.gitignore.io/api/$@ ;}; gi"
-
 [user]
-	name = David Everlöf
-	email = deverlof@festina.com
+	name = David Everlöf
+	email = david@mjukis.dev
+
+[alias]
+	lg1 = log --graph --abbrev-commit --decorate --format=format:'%C(bold blue)%h%C(reset) - %C(bold green)(%ar)%C(reset) %C(white)%s%C(reset) %C(dim white)- %an%C(reset)%C(bold yellow)%d%C(reset)' --all
+	lg2 = log --graph --abbrev-commit --decorate --format=format:'%C(bold blue)%h%C(reset) - %C(bold cyan)%aD%C(reset) %C(bold green)(%ar)%C(reset)%C(bold yellow)%d%C(reset)%n''          %C(white)%s%C(reset) %C(dim white)- %an%C(reset)' --all
+	lg = !"git lg1"
+	rh = reset --hard
+	co = checkout --recurse-submodules
+	ci = commit
+	st = status
+	b = branch
+	s = status
+	c = commit
+	a = add
+	rb = rebase
+	change-commits = "!f() { VAR=$1; OLD=$2; NEW=$3; shift 3; git filter-branch --env-filter \"if [[ \\\"$`echo $VAR`\\\" = '$OLD' ]]; then export $VAR='$NEW'; fi\" $@; }; f "
+	ll = log --pretty=format:"%C(yellow)%h%Cred%d\\ %Creset%s%Cblue\\ [%cn]" --decorate --numstat
+	ignore = "!gi() { curl -L -s https://www.gitignore.io/api/$@ ;}; gi"
+	mr = !git push origin $(git branch --show-current)
+	rebase-main = !git fetch origin main:main && git rebase main
+
 [push]
-	default = matching
+	default = simple
+
 [core]
-	excludesfile = /Users/davideverlof/.gitignore_global
+	excludesfile = ~/.gitignore_global
+	hooksPath = ~/.git-hooks
+
 [color]
 	ui = auto
+
 [difftool "sourcetree"]
-	cmd = opendiff \"$LOCAL\" \"$REMOTE\"
-	path = 
+	cmd = opendiff "$LOCAL" "$REMOTE"
+	path =
+
 [mergetool "sourcetree"]
-	cmd = /Applications/Sourcetree.app/Contents/Resources/opendiff-w.sh \"$LOCAL\" \"$REMOTE\" -ancestor \"$BASE\" -merge \"$MERGED\"
+	cmd = /Applications/Sourcetree.app/Contents/Resources/opendiff-w.sh "$LOCAL" "$REMOTE" -ancestor "$BASE" -merge "$MERGED"
 	trustExitCode = true
+
 [credential]
 	helper = osxkeychain
+
 [submodule]
 	recurse = true
+
 [commit]
-	template = /Users/davideverlof/.stCommitMsg
+	template = ~/.stCommitMsg
+
 [diff]
 	submodule = log
+
 [status]
 	submoduleSummary = true
+
+[rerere]
+	enabled = true
+
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
+
+[checkout]
+	defaultRemote = origin
+
+[init]
+	templateDir = ~/.git-templates
+	defaultBranch = main
+
+[credential "https://github.com"]
+	helper =
+	helper = !/opt/homebrew/bin/gh auth git-credential
+
+[credential "https://gist.github.com"]
+	helper =
+	helper = !/opt/homebrew/bin/gh auth git-credential

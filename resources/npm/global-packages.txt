@@ -1,0 +1,6 @@
+@mobilenext/mobile-mcp
+@openai/codex
+@wednesday-solutions-eng/ai-agent-skills
+firebase-tools
+svgo
+vercel

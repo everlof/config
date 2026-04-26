@@ -1,0 +1,84 @@
+Android Studio
+Apple Configurator
+Arc
+Asset Catalog Tinkerer
+Bropen
+BuildSettingExtractor
+ChatGPT
+Claude
+Codex
+Cursor
+DB Browser for SQLite
+DevCleaner
+Developer
+Discord
+Disk Inspector
+Docker
+Fastmail
+Figma
+FileZilla
+Firefox
+Fork
+GitHub Desktop
+Google Chrome
+Google Docs
+Google Drive
+Google Sheets
+Google Slides
+Hopper Disassembler v4
+iMazing
+InjectionIII
+Inkscape
+IP in menu bar
+IPTV Smart
+iTerm
+Jagex Launcher
+Kaleidoscope
+Kaleidoscope-4
+KeyCastr
+Keynote
+Kite
+Logseq
+LottieFiles
+MacDown
+MenubarCalendar
+Messenger
+Microsoft Excel
+Next Meeting
+Notepad.exe
+Numbers
+OBS
+Ollama
+Origami Studio
+PacketLogger
+Pages
+Paste
+Postman
+Pro Mosaic
+ProfileCreator
+Proxyman
+Raspberry Pi Imager
+Revamp Showcase
+Safari
+SF Symbols
+Sketch
+Slack
+Smarters Pro
+Sourcetree
+Spotify
+Steam
+Swish
+Tampermonkey
+TeamViewer
+TestFlight
+Thunderbird
+Tunnelblick
+Upscayl
+Vinegar
+Visual Studio Code
+VLC
+WhatsOn
+WiFiman
+Wireshark
+Wispr Flow
+Xcode-26.1.1
